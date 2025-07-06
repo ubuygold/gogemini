@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -14,10 +17,12 @@ type OpenAIProxy struct {
 	mutex        sync.Mutex
 	reverseProxy *httputil.ReverseProxy
 	targetURL    *url.URL
+	debug        bool
+	logger       *slog.Logger
 }
 
 // newOpenAIProxyWithURL is the internal constructor that allows for custom target URLs, making it testable.
-func newOpenAIProxyWithURL(geminiKeys []string, target string) (*OpenAIProxy, error) {
+func newOpenAIProxyWithURL(geminiKeys []string, target string, debug bool, logger *slog.Logger) (*OpenAIProxy, error) {
 	targetURL, err := url.Parse(target)
 	if err != nil {
 		return nil, err
@@ -26,6 +31,8 @@ func newOpenAIProxyWithURL(geminiKeys []string, target string) (*OpenAIProxy, er
 	proxy := &OpenAIProxy{
 		geminiKeys: geminiKeys,
 		targetURL:  targetURL,
+		debug:      debug,
+		logger:     logger.With("component", "proxy"),
 	}
 
 	proxy.reverseProxy = &httputil.ReverseProxy{
@@ -46,9 +53,21 @@ func newOpenAIProxyWithURL(geminiKeys []string, target string) (*OpenAIProxy, er
 			proxy.nextKeyIndex = (proxy.nextKeyIndex + 1) % len(proxy.geminiKeys)
 			proxy.mutex.Unlock()
 
+			if proxy.debug {
+				proxy.logger.Debug("Proxying request", "path", req.URL.Path, "key_suffix", key[len(key)-4:])
+			}
+
 			// Set the Authorization header for the upstream request.
 			// The compatible endpoint expects a bearer token.
 			req.Header.Set("Authorization", "Bearer "+key)
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, http.ErrAbortHandler) {
+				proxy.logger.Warn("Client disconnected", "error", err)
+				return
+			}
+			proxy.logger.Error("Proxy error", "error", err)
+			http.Error(w, "Proxy Error", http.StatusBadGateway)
 		},
 	}
 
@@ -56,8 +75,8 @@ func newOpenAIProxyWithURL(geminiKeys []string, target string) (*OpenAIProxy, er
 }
 
 // NewOpenAIProxy creates a new OpenAIProxy with the default Google API target.
-func NewOpenAIProxy(geminiKeys []string) (*OpenAIProxy, error) {
-	return newOpenAIProxyWithURL(geminiKeys, "https://generativelanguage.googleapis.com")
+func NewOpenAIProxy(geminiKeys []string, debug bool, logger *slog.Logger) (*OpenAIProxy, error) {
+	return newOpenAIProxyWithURL(geminiKeys, "https://generativelanguage.googleapis.com", debug, logger)
 }
 
 func (p *OpenAIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {

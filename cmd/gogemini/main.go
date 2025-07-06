@@ -3,29 +3,60 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
 	"gogemini/internal/auth"
 	"gogemini/internal/balancer"
 	"gogemini/internal/config"
+	"gogemini/internal/logger"
 	"gogemini/internal/proxy"
 
 	"github.com/gin-gonic/gin"
 )
 
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	ctx := context.Background()
+// customRecovery is a middleware that recovers from panics and handles http.ErrAbortHandler gracefully.
+func customRecovery(log *slog.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				if recovered == http.ErrAbortHandler {
+					log.Warn("Client connection aborted", "path", c.Request.URL.Path)
+					c.Abort()
+					return
+				}
 
+				log.Error("Panic recovered",
+					"error", recovered,
+					"path", c.Request.URL.Path,
+					"stack", string(debug.Stack()),
+				)
+				c.AbortWithStatus(http.StatusInternalServerError)
+			}
+		}()
+		c.Next()
+	}
+}
+
+func main() {
 	// Load configuration
-	cfg, err := config.LoadConfig("config.yaml")
+	cfg, warning, err := config.LoadConfig("config.yaml")
 	if err != nil {
-		log.Fatalf("Error loading configuration: %v", err)
+		// Use a temporary logger for startup errors
+		slog.Error("Error loading configuration", "error", err)
+		os.Exit(1)
+	}
+
+	// Setup logger
+	log := logger.New(cfg.Debug)
+	log.Info("Logger initialized", "debug_mode", cfg.Debug)
+	if warning != "" {
+		log.Warn(warning)
 	}
 
 	// Create the authorized keys map for the middleware
@@ -35,20 +66,29 @@ func main() {
 	}
 
 	// Create the new SDK-based handler for Gemini
-	geminiHandler, err := balancer.NewBalancer(cfg)
+	geminiHandler, err := balancer.NewBalancer(cfg, log)
 	if err != nil {
-		log.Fatalf("Error creating Gemini handler: %v", err)
+		log.Error("Error creating Gemini handler", "error", err)
+		os.Exit(1)
 	}
 
 	// Create the new reverse proxy for OpenAI
-	openaiProxy, err := proxy.NewOpenAIProxy(cfg.GeminiKeys)
+	openaiProxy, err := proxy.NewOpenAIProxy(cfg.GeminiKeys, cfg.Debug, log)
 	if err != nil {
-		log.Fatalf("Error creating OpenAI proxy: %v", err)
+		log.Error("Error creating OpenAI proxy", "error", err)
+		os.Exit(1)
 	}
 
-	// Create a Gin router without the default logger
+	// Create a Gin router
 	router := gin.New()
-	router.Use(gin.Recovery()) // Add the recovery middleware
+	// Use our custom recovery middleware instead of the default one.
+	router.Use(customRecovery(log))
+
+	// If debug mode is enabled, add the logger middleware
+	if cfg.Debug {
+		// This uses the default gin logger, which is fine for development.
+		router.Use(gin.Logger())
+	}
 
 	// Create a group for Gemini routes
 	geminiHandlerFunc := func(c *gin.Context) {
@@ -76,9 +116,10 @@ func main() {
 
 	// Graceful shutdown
 	go func() {
-		log.Printf("Starting server on port %d. Endpoints: /gemini/ and /openai/", cfg.Port)
+		log.Info("Starting server", "port", cfg.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start server: %v", err)
+			log.Error("Failed to start server", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -86,15 +127,16 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Shutting down server...")
+	log.Info("Shutting down server...")
 
 	// The context is used to inform the server it has 5 seconds to finish
 	// the request it is currently handling
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		log.Error("Server forced to shutdown", "error", err)
+		os.Exit(1)
 	}
 
-	log.Println("Server exiting")
+	log.Info("Server exiting")
 }

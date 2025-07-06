@@ -1,9 +1,12 @@
 package proxy
 
 import (
+	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -42,7 +45,8 @@ func TestOpenAIProxy(t *testing.T) {
 	defer upstreamServer.Close()
 
 	// Create the proxy and point it to the mock upstream server
-	proxy, err := newOpenAIProxyWithURL([]string{"test-key"}, upstreamServer.URL)
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	proxy, err := newOpenAIProxyWithURL([]string{"test-key"}, upstreamServer.URL, false, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -70,8 +74,47 @@ func TestOpenAIProxy(t *testing.T) {
 
 func TestNewOpenAIProxy_UrlParseError(t *testing.T) {
 	// Pass an invalid URL with a control character to force a parse error
-	_, err := newOpenAIProxyWithURL([]string{"test-key"}, "http://\x7f.com")
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	_, err := newOpenAIProxyWithURL([]string{"test-key"}, "http://\x7f.com", false, testLogger)
 	if err == nil {
 		t.Error("Expected an error from newOpenAIProxyWithURL when URL parsing fails, but got nil")
+	}
+}
+
+func TestOpenAIProxy_DebugLogging(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Create a mock upstream server
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstreamServer.Close()
+
+	// Capture log output
+	var logBuf bytes.Buffer
+	testLogger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Create the proxy with debug enabled
+	proxy, err := newOpenAIProxyWithURL([]string{"test-key-1234"}, upstreamServer.URL, true, testLogger)
+	if err != nil {
+		t.Fatalf("Failed to create proxy: %v", err)
+	}
+
+	router := gin.New()
+	router.Any("/*path", gin.WrapH(proxy))
+
+	req, _ := http.NewRequest(http.MethodPost, "/v1/some/path", nil)
+	// Use the closeNotifierRecorder to prevent panics with the reverse proxy
+	rr := newCloseNotifierRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	logOutput := logBuf.String()
+	// With structured logging, we check for specific key-value pairs.
+	if !strings.Contains(logOutput, `"path":"/v1beta/openai/some/path"`) {
+		t.Errorf("Expected log to contain proxying path, but it didn't. Log: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"key_suffix":"1234"`) {
+		t.Errorf("Expected log to contain key suffix, but it didn't. Log: %s", logOutput)
 	}
 }

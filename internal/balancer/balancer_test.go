@@ -3,6 +3,7 @@ package balancer
 import (
 	"gogemini/internal/config"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,7 +14,8 @@ func TestNewBalancer_NoKeys(t *testing.T) {
 	cfg := &config.Config{
 		GeminiKeys: []string{},
 	}
-	_, err := NewBalancer(cfg)
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	_, err := NewBalancer(cfg, testLogger)
 	if err == nil {
 		t.Error("Expected an error when no Gemini keys are provided, but got nil")
 	}
@@ -35,7 +37,8 @@ func TestBalancer_Proxy(t *testing.T) {
 	}
 
 	// 3. Create the balancer
-	balancer, err := NewBalancer(cfg)
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	balancer, err := NewBalancer(cfg, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create balancer: %v", err)
 	}
@@ -83,7 +86,8 @@ func TestBalancer_Close(t *testing.T) {
 	cfg := &config.Config{
 		GeminiKeys: []string{"key1"},
 	}
-	balancer, err := NewBalancer(cfg)
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	balancer, err := NewBalancer(cfg, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create balancer: %v", err)
 	}
@@ -105,7 +109,8 @@ func TestBalancer_ProxyError(t *testing.T) {
 	}
 
 	// 3. Create the balancer
-	balancer, err := NewBalancer(cfg)
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	balancer, err := NewBalancer(cfg, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create balancer: %v", err)
 	}

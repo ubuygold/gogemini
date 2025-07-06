@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"log"
 	"os"
 
 	"gopkg.in/yaml.v2"
@@ -16,26 +15,27 @@ type Config struct {
 	Debug      bool     `yaml:"debug"`
 }
 
-// LoadConfig reads and parses the configuration file.
-func LoadConfig(path string) (*Config, error) {
+// LoadConfig reads and parses the configuration file. It returns the config and a potential warning message.
+func LoadConfig(path string) (*Config, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		return nil, "", fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	var config Config
+	var warning string
 	err = yaml.Unmarshal(data, &config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
+		return nil, "", fmt.Errorf("failed to parse config file: %w", err)
 	}
 
 	if len(config.GeminiKeys) == 0 {
-		return nil, fmt.Errorf("no gemini_keys found in config file")
+		return nil, "", fmt.Errorf("no gemini_keys found in config file")
 	}
 
 	if len(config.ClientKeys) == 0 {
-		log.Println("Warning: No client_keys configured. The proxy will not authorize any requests.")
+		warning = "No client_keys configured. The proxy will not authorize any requests."
 	}
 
-	return &config, nil
+	return &config, warning, nil
 }

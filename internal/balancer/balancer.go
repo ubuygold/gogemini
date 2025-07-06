@@ -1,9 +1,11 @@
 package balancer
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"gogemini/internal/config"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -16,10 +18,11 @@ type Balancer struct {
 	nextKey int
 	keys    []string
 	proxy   *httputil.ReverseProxy
+	logger  *slog.Logger
 }
 
 // NewBalancer creates a new Balancer that acts as a reverse proxy.
-func NewBalancer(cfg *config.Config) (*Balancer, error) {
+func NewBalancer(cfg *config.Config, logger *slog.Logger) (*Balancer, error) {
 	if len(cfg.GeminiKeys) == 0 {
 		return nil, fmt.Errorf("no Gemini API keys provided in configuration")
 	}
@@ -32,8 +35,9 @@ func NewBalancer(cfg *config.Config) (*Balancer, error) {
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 
 	balancer := &Balancer{
-		keys:  cfg.GeminiKeys,
-		proxy: proxy,
+		keys:   cfg.GeminiKeys,
+		proxy:  proxy,
+		logger: logger.With("component", "balancer"),
 	}
 
 	proxy.Director = func(req *http.Request) {
@@ -50,7 +54,15 @@ func NewBalancer(cfg *config.Config) (*Balancer, error) {
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("Proxy error: %v", err)
+		// Check if the error is a context cancellation from the client.
+		if errors.Is(err, context.Canceled) || errors.Is(err, http.ErrAbortHandler) {
+			// This happens when the client closes the connection, which is normal for streaming.
+			balancer.logger.Warn("Client disconnected", "error", err)
+			return // Stop further processing.
+		}
+
+		// For all other errors, log them and return a bad gateway status.
+		balancer.logger.Error("Proxy error", "error", err)
 		http.Error(w, "Proxy Error", http.StatusBadGateway)
 	}
 

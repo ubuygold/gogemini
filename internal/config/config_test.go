@@ -20,9 +20,12 @@ debug: true
 		tmpfile.Write(content)
 		tmpfile.Close()
 
-		config, err := LoadConfig(tmpfile.Name())
+		config, warning, err := LoadConfig(tmpfile.Name())
 		if err != nil {
 			t.Fatalf("Expected no error, but got %v", err)
+		}
+		if warning != "" {
+			t.Errorf("Expected no warning, but got '%s'", warning)
 		}
 		if len(config.ClientKeys) != 1 || config.ClientKeys[0] != "client1" {
 			t.Errorf("Expected [client1] ClientKeys, got %v", config.ClientKeys)
@@ -36,7 +39,7 @@ debug: true
 	})
 
 	t.Run("non-existent file", func(t *testing.T) {
-		_, err := LoadConfig("non-existent-file.yaml")
+		_, _, err := LoadConfig("non-existent-file.yaml")
 		if err == nil {
 			t.Error("Expected an error, but got nil")
 		}
@@ -47,7 +50,7 @@ debug: true
 		defer os.Remove(tmpfile.Name())
 		tmpfile.Write([]byte(`client_keys: [c1]`))
 		tmpfile.Close()
-		_, err := LoadConfig(tmpfile.Name())
+		_, _, err := LoadConfig(tmpfile.Name())
 		if err == nil {
 			t.Error("Expected an error, but got nil")
 		}
@@ -57,7 +60,7 @@ debug: true
 		defer os.Remove(tmpfile.Name())
 		tmpfile.Write([]byte(`gemini_keys: [g1]\nport: 8080\n  debug: true`)) // Invalid YAML
 		tmpfile.Close()
-		_, err := LoadConfig(tmpfile.Name())
+		_, _, err := LoadConfig(tmpfile.Name())
 		if err == nil {
 			t.Error("Expected an error for invalid YAML, but got nil")
 		}
@@ -75,9 +78,12 @@ debug: true
 		tmpfile.Write(content)
 		tmpfile.Close()
 
-		config, err := LoadConfig(tmpfile.Name())
+		config, warning, err := LoadConfig(tmpfile.Name())
 		if err != nil {
 			t.Fatalf("Expected no error, but got %v", err)
+		}
+		if warning == "" {
+			t.Error("Expected a warning about missing client keys, but got none")
 		}
 		if len(config.ClientKeys) != 0 {
 			t.Errorf("Expected 0 ClientKeys, got %d", len(config.ClientKeys))
