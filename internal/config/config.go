@@ -7,12 +7,17 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+// DatabaseConfig holds the database connection information.
+type DatabaseConfig struct {
+	Type string `yaml:"type"`
+	DSN  string `yaml:"dsn"`
+}
+
 // Config holds the configuration for the load balancer.
 type Config struct {
-	ClientKeys []string `yaml:"client_keys"`
-	GeminiKeys []string `yaml:"gemini_keys"`
-	Port       int      `yaml:"port"`
-	Debug      bool     `yaml:"debug"`
+	Database DatabaseConfig `yaml:"database"`
+	Port     int            `yaml:"port"`
+	Debug    bool           `yaml:"debug"`
 }
 
 // LoadConfig reads and parses the configuration file. It returns the config and a potential warning message.
@@ -29,12 +34,8 @@ func LoadConfig(path string) (*Config, string, error) {
 		return nil, "", fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	if len(config.GeminiKeys) == 0 {
-		return nil, "", fmt.Errorf("no gemini_keys found in config file")
-	}
-
-	if len(config.ClientKeys) == 0 {
-		warning = "No client_keys configured. The proxy will not authorize any requests."
+	if config.Database.Type == "" || config.Database.DSN == "" {
+		return nil, "", fmt.Errorf("database type and dsn must be configured")
 	}
 
 	return &config, warning, nil

@@ -7,14 +7,12 @@ import (
 
 func TestLoadConfig(t *testing.T) {
 	t.Run("valid config", func(t *testing.T) {
-		content := []byte(`
-client_keys:
-  - client1
-gemini_keys:
-  - gemini1
-port: 8080
-debug: true
-`)
+		content := []byte(
+			"database:\n" +
+				"  type: \"sqlite\"\n" +
+				"  dsn: \"gogemini.db\"\n" +
+				"port: 8080\n" +
+				"debug: true\n")
 		tmpfile, _ := os.CreateTemp("", "config.yaml")
 		defer os.Remove(tmpfile.Name())
 		tmpfile.Write(content)
@@ -27,8 +25,11 @@ debug: true
 		if warning != "" {
 			t.Errorf("Expected no warning, but got '%s'", warning)
 		}
-		if len(config.ClientKeys) != 1 || config.ClientKeys[0] != "client1" {
-			t.Errorf("Expected [client1] ClientKeys, got %v", config.ClientKeys)
+		if config.Database.Type != "sqlite" {
+			t.Errorf("Expected database type sqlite, got %s", config.Database.Type)
+		}
+		if config.Database.DSN != "gogemini.db" {
+			t.Errorf("Expected database dsn gogemini.db, got %s", config.Database.DSN)
 		}
 		if config.Port != 8080 {
 			t.Errorf("Expected port 8080, got %d", config.Port)
@@ -45,20 +46,10 @@ debug: true
 		}
 	})
 
-	t.Run("missing gemini_keys", func(t *testing.T) {
-		tmpfile, _ := os.CreateTemp("", "config.yaml")
-		defer os.Remove(tmpfile.Name())
-		tmpfile.Write([]byte(`client_keys: [c1]`))
-		tmpfile.Close()
-		_, _, err := LoadConfig(tmpfile.Name())
-		if err == nil {
-			t.Error("Expected an error, but got nil")
-		}
-	})
 	t.Run("invalid yaml", func(t *testing.T) {
 		tmpfile, _ := os.CreateTemp("", "config.yaml")
 		defer os.Remove(tmpfile.Name())
-		tmpfile.Write([]byte(`gemini_keys: [g1]\nport: 8080\n  debug: true`)) // Invalid YAML
+		tmpfile.Write([]byte("port: 8080\n  debug: true\n invalid-indent: true")) // Invalid YAML
 		tmpfile.Close()
 		_, _, err := LoadConfig(tmpfile.Name())
 		if err == nil {
@@ -66,27 +57,18 @@ debug: true
 		}
 	})
 
-	t.Run("no client keys", func(t *testing.T) {
-		content := []byte(`
-gemini_keys:
-  - gemini1
-port: 8080
-debug: true
-`)
+	t.Run("missing database config", func(t *testing.T) {
+		content := []byte(
+			"port: 8080\n" +
+				"debug: true\n")
 		tmpfile, _ := os.CreateTemp("", "config.yaml")
 		defer os.Remove(tmpfile.Name())
 		tmpfile.Write(content)
 		tmpfile.Close()
 
-		config, warning, err := LoadConfig(tmpfile.Name())
-		if err != nil {
-			t.Fatalf("Expected no error, but got %v", err)
-		}
-		if warning == "" {
-			t.Error("Expected a warning about missing client keys, but got none")
-		}
-		if len(config.ClientKeys) != 0 {
-			t.Errorf("Expected 0 ClientKeys, got %d", len(config.ClientKeys))
+		_, _, err := LoadConfig(tmpfile.Name())
+		if err == nil {
+			t.Error("Expected an error for missing database config, but got nil")
 		}
 	})
 }

@@ -14,8 +14,10 @@ import (
 	"gogemini/internal/auth"
 	"gogemini/internal/balancer"
 	"gogemini/internal/config"
+	"gogemini/internal/db"
 	"gogemini/internal/logger"
 	"gogemini/internal/proxy"
+	"gogemini/internal/scheduler"
 
 	"github.com/gin-gonic/gin"
 )
@@ -59,21 +61,27 @@ func main() {
 		log.Warn(warning)
 	}
 
-	// Create the authorized keys map for the middleware
-	authorizedKeys := make(map[string]bool)
-	for _, key := range cfg.ClientKeys {
-		authorizedKeys[key] = true
+	// Initialize database
+	database, err := db.Init(cfg.Database)
+	if err != nil {
+		log.Error("Error initializing database", "error", err)
+		os.Exit(1)
 	}
+	log.Info("Database initialized", "type", cfg.Database.Type)
+
+	// Start the scheduler
+	scheduler.StartScheduler(database)
+	log.Info("Scheduler started")
 
 	// Create the new SDK-based handler for Gemini
-	geminiHandler, err := balancer.NewBalancer(cfg, log)
+	geminiHandler, err := balancer.NewBalancer(database, log)
 	if err != nil {
 		log.Error("Error creating Gemini handler", "error", err)
 		os.Exit(1)
 	}
 
 	// Create the new reverse proxy for OpenAI
-	openaiProxy, err := proxy.NewOpenAIProxy(cfg.GeminiKeys, cfg.Debug, log)
+	openaiProxy, err := proxy.NewOpenAIProxy(database, cfg.Debug, log)
 	if err != nil {
 		log.Error("Error creating OpenAI proxy", "error", err)
 		os.Exit(1)
@@ -95,7 +103,7 @@ func main() {
 		http.StripPrefix("/gemini", geminiHandler).ServeHTTP(c.Writer, c.Request)
 	}
 	geminiGroup := router.Group("/gemini")
-	geminiGroup.Use(auth.AuthMiddleware(authorizedKeys))
+	geminiGroup.Use(auth.AuthMiddleware(database))
 	geminiGroup.GET("/*path", geminiHandlerFunc)
 	geminiGroup.POST("/*path", geminiHandlerFunc)
 
@@ -104,7 +112,7 @@ func main() {
 		http.StripPrefix("/openai", openaiProxy).ServeHTTP(c.Writer, c.Request)
 	}
 	openaiGroup := router.Group("/openai")
-	openaiGroup.Use(auth.AuthMiddleware(authorizedKeys))
+	openaiGroup.Use(auth.AuthMiddleware(database))
 	openaiGroup.GET("/*path", openaiHandlerFunc)
 	openaiGroup.POST("/*path", openaiHandlerFunc)
 
@@ -133,6 +141,10 @@ func main() {
 	// the request it is currently handling
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// Close the handlers to stop their background tasks
+	geminiHandler.Close()
+	openaiProxy.Close()
+
 	if err := server.Shutdown(ctx); err != nil {
 		log.Error("Server forced to shutdown", "error", err)
 		os.Exit(1)

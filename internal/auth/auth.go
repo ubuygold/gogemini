@@ -1,35 +1,60 @@
 package auth
 
 import (
+	"gogemini/internal/model"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
-func AuthMiddleware(authorizedKeys map[string]bool) gin.HandlerFunc {
+func AuthMiddleware(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		var token string
 		// Check for OpenAI-style Bearer token
 		authHeader := c.GetHeader("Authorization")
 		if authHeader != "" {
 			parts := strings.Split(authHeader, " ")
 			if len(parts) == 2 && parts[0] == "Bearer" {
-				if authorizedKeys[parts[1]] {
-					c.Next()
-					return
-				}
+				token = parts[1]
 			}
 		}
 
-		// Check for Gemini-style API key
-		geminiKey := c.GetHeader("x-goog-api-key")
-		if geminiKey != "" {
-			if authorizedKeys[geminiKey] {
-				c.Next()
+		// If no Bearer token, check for Gemini-style API key
+		if token == "" {
+			token = c.GetHeader("x-goog-api-key")
+		}
+
+		if token == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "API key is required"})
+			return
+		}
+
+		var apiKey model.APIKey
+		result := db.Where("key = ?", token).First(&apiKey)
+		if result.Error != nil {
+			if result.Error == gorm.ErrRecordNotFound {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
 				return
 			}
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+			return
 		}
 
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		if apiKey.Status != "active" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "API key is not active"})
+			return
+		}
+
+		if !apiKey.ExpiresAt.IsZero() && apiKey.ExpiresAt.Before(time.Now()) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "API key has expired"})
+			return
+		}
+
+		// TODO: Check permissions and rate limit
+
+		c.Next()
 	}
 }
