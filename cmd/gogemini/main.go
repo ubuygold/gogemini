@@ -109,7 +109,7 @@ func main() {
 		http.StripPrefix("/gemini", geminiHandler).ServeHTTP(c.Writer, c.Request)
 	}
 	geminiGroup := router.Group("/gemini")
-	geminiGroup.Use(auth.AuthMiddleware(dbService.GetDB()))
+	geminiGroup.Use(auth.AuthMiddleware(dbService))
 	geminiGroup.GET("/*path", geminiHandlerFunc)
 	geminiGroup.POST("/*path", geminiHandlerFunc)
 
@@ -118,7 +118,7 @@ func main() {
 		http.StripPrefix("/openai", openaiProxy).ServeHTTP(c.Writer, c.Request)
 	}
 	openaiGroup := router.Group("/openai")
-	openaiGroup.Use(auth.AuthMiddleware(dbService.GetDB()))
+	openaiGroup.Use(auth.AuthMiddleware(dbService))
 	openaiGroup.GET("/*path", openaiHandlerFunc)
 	openaiGroup.POST("/*path", openaiHandlerFunc)
 

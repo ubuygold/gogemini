@@ -213,6 +213,11 @@ func (p *OpenAIProxy) modifyResponse(resp *http.Response) error {
 				p.logger.Warn("Failed to reset failure count for key", "key_suffix", safeKeySuffix(succeededKey), "error", err)
 			}
 
+			// Also, increment the usage count.
+			if err := p.database.IncrementGeminiKeyUsageCount(succeededKey); err != nil {
+				p.logger.Warn("Failed to increment usage count for key", "key_suffix", safeKeySuffix(succeededKey), "error", err)
+			}
+
 			// If it was temporarily disabled, log its re-activation.
 			if wasTemporarilyDisabled {
 				p.logger.Info("Re-activating key after successful request", "key_suffix", safeKeySuffix(succeededKey))

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"gogemini/internal/db"
 	"gogemini/internal/model"
 	"net/http"
 	"strings"
@@ -10,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func AuthMiddleware(db *gorm.DB) gin.HandlerFunc {
+func AuthMiddleware(dbService db.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var token string
 		// Check for OpenAI-style Bearer token
@@ -33,7 +34,8 @@ func AuthMiddleware(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		var apiKey model.APIKey
-		result := db.Where("key = ?", token).First(&apiKey)
+		// Use the raw GORM DB instance for the lookup
+		result := dbService.GetDB().Where("key = ?", token).First(&apiKey)
 		if result.Error != nil {
 			if result.Error == gorm.ErrRecordNotFound {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
@@ -53,7 +55,10 @@ func AuthMiddleware(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		// TODO: Check permissions and rate limit
+		// Increment usage count in a goroutine to not slow down the request
+		go func() {
+			_ = dbService.IncrementAPIKeyUsageCount(token)
+		}()
 
 		c.Next()
 	}

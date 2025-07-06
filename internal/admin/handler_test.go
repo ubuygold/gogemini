@@ -33,11 +33,12 @@ type mockDBService struct {
 	deleteClientKeyErr error
 }
 
-func (m *mockDBService) ListGeminiKeys() ([]model.GeminiKey, error) {
+func (m *mockDBService) ListGeminiKeys(page, limit int, statusFilter string, minFailureCount int) ([]model.GeminiKey, int64, error) {
 	if m.listGeminiKeysErr != nil {
-		return nil, m.listGeminiKeysErr
+		return nil, 0, m.listGeminiKeysErr
 	}
-	return []model.GeminiKey{}, nil
+	// Return a dummy response for the mock
+	return []model.GeminiKey{{Key: "mock-key"}}, 1, nil
 }
 
 func (m *mockDBService) CreateGeminiKey(key *model.GeminiKey) error {
@@ -147,10 +148,14 @@ func TestGeminiKeyHandlers(t *testing.T) {
 	router.ServeHTTP(resp, req)
 
 	assert.Equal(t, http.StatusOK, resp.Code)
-	var keys []model.GeminiKey
-	err = json.Unmarshal(resp.Body.Bytes(), &keys)
+	var listResp struct {
+		Keys  []model.GeminiKey `json:"keys"`
+		Total int64             `json:"total"`
+	}
+	err = json.Unmarshal(resp.Body.Bytes(), &listResp)
 	assert.NoError(t, err)
-	assert.NotEmpty(t, keys)
+	assert.NotEmpty(t, listResp.Keys)
+	assert.Equal(t, int64(1), listResp.Total)
 
 	// 4. Update the key
 	updateBody := `{"key": "updated-gemini-key", "status": "disabled"}`

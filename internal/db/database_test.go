@@ -32,9 +32,10 @@ func TestGeminiKeyCRUD(t *testing.T) {
 	assert.Equal(t, geminiKey.Key, fetchedKey.Key)
 
 	// List
-	keys, err := db.ListGeminiKeys()
+	keys, total, err := db.ListGeminiKeys(1, 10, "all", 0)
 	assert.NoError(t, err)
 	assert.Len(t, keys, 1)
+	assert.Equal(t, int64(1), total)
 
 	// Update
 	fetchedKey.Key = "updated-key"
@@ -160,14 +161,20 @@ func TestBatchAddDeleteGeminiKeys(t *testing.T) {
 	// Batch Add
 	err := db.BatchAddGeminiKeys(keys)
 	assert.NoError(t, err)
-	allKeys, _ := db.ListGeminiKeys()
+	allKeys, total, _ := db.ListGeminiKeys(1, 10, "all", 0)
 	assert.Len(t, allKeys, 2)
+	assert.Equal(t, int64(2), total)
 
 	// Batch Delete
-	err = db.BatchDeleteGeminiKeys(keys)
+	var idsToDelete []uint
+	for _, k := range allKeys {
+		idsToDelete = append(idsToDelete, k.ID)
+	}
+	err = db.BatchDeleteGeminiKeys(idsToDelete)
 	assert.NoError(t, err)
-	allKeys, _ = db.ListGeminiKeys()
+	allKeys, total, _ = db.ListGeminiKeys(1, 10, "all", 0)
 	assert.Len(t, allKeys, 0)
+	assert.Equal(t, int64(0), total)
 }
 
 func TestIncrementAPIKeyUsageCount(t *testing.T) {

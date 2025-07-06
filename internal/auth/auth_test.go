@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"gogemini/internal/db"
 	"gogemini/internal/model"
 	"net/http"
 	"net/http/httptest"
@@ -12,21 +13,62 @@ import (
 	"gorm.io/gorm"
 )
 
-func setupTestDB(t *testing.T) *gorm.DB {
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+// mockAuthDBService is a mock implementation of the db.Service for auth tests.
+// It embeds a real GORM DB instance for in-memory testing.
+type mockAuthDBService struct {
+	db *gorm.DB
+}
+
+func (m *mockAuthDBService) GetDB() *gorm.DB { return m.db }
+func (m *mockAuthDBService) IncrementAPIKeyUsageCount(key string) error {
+	// No-op for this test, as we only care about the auth logic, not usage counting.
+	return nil
+}
+
+// --- Dummy implementations for the rest of the db.Service interface ---
+func (m *mockAuthDBService) CreateGeminiKey(key *model.GeminiKey) error { return nil }
+func (m *mockAuthDBService) BatchAddGeminiKeys(keys []string) error     { return nil }
+func (m *mockAuthDBService) BatchDeleteGeminiKeys(ids []uint) error     { return nil }
+func (m *mockAuthDBService) ListGeminiKeys(page, limit int, statusFilter string, minFailureCount int) ([]model.GeminiKey, int64, error) {
+	return nil, 0, nil
+}
+func (m *mockAuthDBService) GetGeminiKey(id uint) (*model.GeminiKey, error)   { return nil, nil }
+func (m *mockAuthDBService) UpdateGeminiKey(key *model.GeminiKey) error       { return nil }
+func (m *mockAuthDBService) DeleteGeminiKey(id uint) error                    { return nil }
+func (m *mockAuthDBService) LoadActiveGeminiKeys() ([]model.GeminiKey, error) { return nil, nil }
+func (m *mockAuthDBService) HandleGeminiKeyFailure(key string, disableThreshold int) (bool, error) {
+	return false, nil
+}
+func (m *mockAuthDBService) ResetGeminiKeyFailureCount(key string) error { return nil }
+func (m *mockAuthDBService) IncrementGeminiKeyUsageCount(key string) error {
+	return nil
+}
+func (m *mockAuthDBService) CreateAPIKey(key *model.APIKey) error     { return nil }
+func (m *mockAuthDBService) ListAPIKeys() ([]model.APIKey, error)     { return nil, nil }
+func (m *mockAuthDBService) GetAPIKey(id uint) (*model.APIKey, error) { return nil, nil }
+func (m *mockAuthDBService) UpdateAPIKey(key *model.APIKey) error     { return nil }
+func (m *mockAuthDBService) DeleteAPIKey(id uint) error               { return nil }
+func (m *mockAuthDBService) ResetAllAPIKeyUsage() error               { return nil }
+
+// Ensure mockAuthDBService implements the interface
+var _ db.Service = (*mockAuthDBService)(nil)
+
+func setupTestAuthDB(t *testing.T) (db.Service, *gorm.DB) {
+	gormDB, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("Failed to connect to database: %v", err)
 	}
-	err = db.AutoMigrate(&model.APIKey{})
+	err = gormDB.AutoMigrate(&model.APIKey{})
 	if err != nil {
 		t.Fatalf("Failed to migrate database: %v", err)
 	}
-	return db
+	mockService := &mockAuthDBService{db: gormDB}
+	return mockService, gormDB
 }
 
 func TestAuthMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db := setupTestDB(t)
+	mockService, db := setupTestAuthDB(t)
 
 	// Populate test data
 	db.Create(&model.APIKey{Key: "valid-key", Status: "active"})
@@ -34,7 +76,7 @@ func TestAuthMiddleware(t *testing.T) {
 	db.Create(&model.APIKey{Key: "expired-key", Status: "active", ExpiresAt: time.Now().Add(-time.Hour)})
 
 	router := gin.New()
-	router.Use(AuthMiddleware(db))
+	router.Use(AuthMiddleware(mockService))
 	router.GET("/", func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})

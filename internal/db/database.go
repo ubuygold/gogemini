@@ -17,8 +17,8 @@ type Service interface {
 	// Gemini Key Management
 	CreateGeminiKey(key *model.GeminiKey) error
 	BatchAddGeminiKeys(keys []string) error
-	BatchDeleteGeminiKeys(keys []string) error
-	ListGeminiKeys() ([]model.GeminiKey, error)
+	BatchDeleteGeminiKeys(ids []uint) error
+	ListGeminiKeys(page, limit int, statusFilter string, minFailureCount int) ([]model.GeminiKey, int64, error)
 	GetGeminiKey(id uint) (*model.GeminiKey, error)
 	UpdateGeminiKey(key *model.GeminiKey) error
 	DeleteGeminiKey(id uint) error
@@ -159,14 +159,14 @@ func (s *gormService) BatchAddGeminiKeys(keys []string) error {
 }
 
 // BatchDeleteGeminiKeys removes multiple Gemini keys from the database.
-func (s *gormService) BatchDeleteGeminiKeys(keys []string) error {
+func (s *gormService) BatchDeleteGeminiKeys(ids []uint) error {
 	if s.db.Error != nil {
 		return s.db.Error
 	}
-	if len(keys) == 0 {
+	if len(ids) == 0 {
 		return nil
 	}
-	result := s.db.Unscoped().Where("key IN ?", keys).Delete(&model.GeminiKey{})
+	result := s.db.Unscoped().Where("id IN ?", ids).Delete(&model.GeminiKey{})
 	if result.Error != nil {
 		return fmt.Errorf("failed to batch delete gemini keys: %w", result.Error)
 	}
@@ -181,13 +181,32 @@ func (s *gormService) CreateGeminiKey(key *model.GeminiKey) error {
 	return nil
 }
 
-func (s *gormService) ListGeminiKeys() ([]model.GeminiKey, error) {
+func (s *gormService) ListGeminiKeys(page, limit int, statusFilter string, minFailureCount int) ([]model.GeminiKey, int64, error) {
 	var keys []model.GeminiKey
-	result := s.db.Find(&keys)
-	if result.Error != nil {
-		return nil, fmt.Errorf("failed to list gemini keys: %w", result.Error)
+	var total int64
+
+	tx := s.db.Model(&model.GeminiKey{})
+
+	if statusFilter != "all" && statusFilter != "" {
+		tx = tx.Where("status = ?", statusFilter)
 	}
-	return keys, nil
+	if minFailureCount > 0 {
+		tx = tx.Where("failure_count >= ?", minFailureCount)
+	}
+
+	// Get total count after applying filters
+	if err := tx.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("failed to count gemini keys: %w", err)
+	}
+
+	// Get paginated results
+	offset := (page - 1) * limit
+	result := tx.Offset(offset).Limit(limit).Order("id desc").Find(&keys)
+	if result.Error != nil {
+		return nil, 0, fmt.Errorf("failed to list gemini keys: %w", result.Error)
+	}
+
+	return keys, total, nil
 }
 
 func (s *gormService) GetGeminiKey(id uint) (*model.GeminiKey, error) {

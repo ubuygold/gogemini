@@ -20,12 +20,21 @@ func NewHandler(dbService db.Service) *Handler {
 // Gemini Key Handlers
 
 func (h *Handler) ListGeminiKeysHandler(c *gin.Context) {
-	keys, err := h.db.ListGeminiKeys()
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	statusFilter := c.DefaultQuery("status", "all")
+	minFailureCount, _ := strconv.Atoi(c.DefaultQuery("minFailureCount", "0"))
+
+	keys, total, err := h.db.ListGeminiKeys(page, limit, statusFilter, minFailureCount)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list gemini keys"})
 		return
 	}
-	c.JSON(http.StatusOK, keys)
+
+	c.JSON(http.StatusOK, gin.H{
+		"keys":  keys,
+		"total": total,
+	})
 }
 
 func (h *Handler) CreateGeminiKeyHandler(c *gin.Context) {
@@ -85,6 +94,35 @@ func (h *Handler) DeleteGeminiKeyHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusNoContent, nil)
+}
+func (h *Handler) BatchCreateGeminiKeysHandler(c *gin.Context) {
+	var req struct {
+		Keys []string `json:"keys"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+	if err := h.db.BatchAddGeminiKeys(req.Keys); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to batch create gemini keys"})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"message": "Keys created successfully"})
+}
+
+func (h *Handler) BatchDeleteGeminiKeysHandler(c *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+	if err := h.db.BatchDeleteGeminiKeys(req.IDs); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to batch delete gemini keys"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Keys deleted successfully"})
 }
 
 // Client Key Handlers

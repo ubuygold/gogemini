@@ -18,6 +18,8 @@ func SetupRoutes(router *gin.Engine, dbService db.Service, cfg *config.Config) {
 		{
 			geminiKeysGroup.GET("", handler.ListGeminiKeysHandler)
 			geminiKeysGroup.POST("", handler.CreateGeminiKeyHandler)
+			geminiKeysGroup.POST("/batch", handler.BatchCreateGeminiKeysHandler)
+			geminiKeysGroup.DELETE("/batch", handler.BatchDeleteGeminiKeysHandler)
 			geminiKeysGroup.GET("/:id", handler.GetGeminiKeyHandler)
 			geminiKeysGroup.PUT("/:id", handler.UpdateGeminiKeyHandler)
 			geminiKeysGroup.DELETE("/:id", handler.DeleteGeminiKeyHandler)

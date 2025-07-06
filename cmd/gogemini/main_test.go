@@ -211,14 +211,14 @@ proxy:
 		http.StripPrefix("/gemini", geminiHandler).ServeHTTP(c.Writer, c.Request)
 	}
 	geminiGroup := router.Group("/gemini")
-	geminiGroup.Use(auth.AuthMiddleware(dbService.GetDB()))
+	geminiGroup.Use(auth.AuthMiddleware(dbService))
 	geminiGroup.Any("/*path", geminiHandlerFunc)
 
 	openaiHandlerFunc := func(c *gin.Context) {
 		http.StripPrefix("/openai", openaiProxy).ServeHTTP(c.Writer, c.Request)
 	}
 	openaiGroup := router.Group("/openai")
-	openaiGroup.Use(auth.AuthMiddleware(dbService.GetDB()))
+	openaiGroup.Use(auth.AuthMiddleware(dbService))
 	openaiGroup.Any("/*path", openaiHandlerFunc)
 
 	// 2. Create a client API key via the admin endpoint
