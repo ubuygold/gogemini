@@ -2,14 +2,12 @@ package admin
 
 import (
 	"gogemini/internal/db"
+	"gogemini/internal/model"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
-
-type KeysRequest struct {
-	Keys []string `json:"keys"`
-}
 
 type Handler struct {
 	db db.Service
@@ -19,50 +17,142 @@ func NewHandler(dbService db.Service) *Handler {
 	return &Handler{db: dbService}
 }
 
-func (h *Handler) AddKeysHandler(c *gin.Context) {
-	if h.db == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database not configured"})
-		return
-	}
-	var req KeysRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
-		return
-	}
+// Gemini Key Handlers
 
-	if len(req.Keys) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Keys list cannot be empty"})
+func (h *Handler) ListGeminiKeysHandler(c *gin.Context) {
+	keys, err := h.db.ListGeminiKeys()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list gemini keys"})
 		return
 	}
-
-	if err := h.db.BatchAddGeminiKeys(req.Keys); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add keys"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Keys added successfully"})
+	c.JSON(http.StatusOK, keys)
 }
 
-func (h *Handler) DeleteKeysHandler(c *gin.Context) {
-	if h.db == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database not configured"})
-		return
-	}
-	var req KeysRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+func (h *Handler) CreateGeminiKeyHandler(c *gin.Context) {
+	var key model.GeminiKey
+	if err := c.ShouldBindJSON(&key); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
 		return
 	}
-
-	if len(req.Keys) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Keys list cannot be empty"})
+	if err := h.db.CreateGeminiKey(&key); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create gemini key"})
 		return
 	}
+	c.JSON(http.StatusCreated, key)
+}
 
-	if err := h.db.BatchDeleteGeminiKeys(req.Keys); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete keys"})
+func (h *Handler) GetGeminiKeyHandler(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid key ID"})
 		return
 	}
+	key, err := h.db.GetGeminiKey(uint(id))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Gemini key not found"})
+		return
+	}
+	c.JSON(http.StatusOK, key)
+}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Keys deleted successfully"})
+func (h *Handler) UpdateGeminiKeyHandler(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid key ID"})
+		return
+	}
+	var key model.GeminiKey
+	if err := c.ShouldBindJSON(&key); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+	key.ID = uint(id)
+	if err := h.db.UpdateGeminiKey(&key); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update gemini key"})
+		return
+	}
+	c.JSON(http.StatusOK, key)
+}
+
+func (h *Handler) DeleteGeminiKeyHandler(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid key ID"})
+		return
+	}
+	if err := h.db.DeleteGeminiKey(uint(id)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete gemini key"})
+		return
+	}
+	c.JSON(http.StatusNoContent, nil)
+}
+
+// Client Key Handlers
+
+func (h *Handler) ListClientKeysHandler(c *gin.Context) {
+	keys, err := h.db.ListAPIKeys()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list client keys"})
+		return
+	}
+	c.JSON(http.StatusOK, keys)
+}
+
+func (h *Handler) CreateClientKeyHandler(c *gin.Context) {
+	var key model.APIKey
+	if err := c.ShouldBindJSON(&key); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+	if err := h.db.CreateAPIKey(&key); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create client key"})
+		return
+	}
+	c.JSON(http.StatusCreated, key)
+}
+
+func (h *Handler) GetClientKeyHandler(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid key ID"})
+		return
+	}
+	key, err := h.db.GetAPIKey(uint(id))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Client key not found"})
+		return
+	}
+	c.JSON(http.StatusOK, key)
+}
+
+func (h *Handler) UpdateClientKeyHandler(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid key ID"})
+		return
+	}
+	var key model.APIKey
+	if err := c.ShouldBindJSON(&key); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+	key.ID = uint(id)
+	if err := h.db.UpdateAPIKey(&key); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update client key"})
+		return
+	}
+	c.JSON(http.StatusOK, key)
+}
+
+func (h *Handler) DeleteClientKeyHandler(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid key ID"})
+		return
+	}
+	if err := h.db.DeleteAPIKey(uint(id)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete client key"})
+		return
+	}
+	c.JSON(http.StatusNoContent, nil)
 }

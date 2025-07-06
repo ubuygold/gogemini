@@ -22,7 +22,9 @@ import (
 // setupTestDB creates a new in-memory SQLite database for testing.
 func setupTestDB(t *testing.T) (db.Service, *gorm.DB) {
 	t.Helper()
-	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
+	// Use a temporary file-based database for each test to ensure isolation.
+	dbPath := fmt.Sprintf("%s/gogemini_test.db", t.TempDir())
+	dsn := dbPath
 	service, err := db.NewService(config.DatabaseConfig{
 		Type: "sqlite",
 		DSN:  dsn,
@@ -30,10 +32,7 @@ func setupTestDB(t *testing.T) (db.Service, *gorm.DB) {
 	if err != nil {
 		t.Fatalf("Failed to create test db service: %v", err)
 	}
-	err = service.GetDB().AutoMigrate(&model.GeminiKey{})
-	if err != nil {
-		t.Fatalf("Failed to auto-migrate schema: %v", err)
-	}
+	// The NewService function already handles AutoMigrate for all necessary models.
 	return service, service.GetDB()
 }
 
@@ -73,7 +72,8 @@ func TestOpenAIProxy(t *testing.T) {
 
 	// Create the proxy and point it to the mock upstream server
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(dbService, upstreamServer.URL, false, testLogger)
+	testConfig := &config.Config{Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	proxy, err := newOpenAIProxyWithURL(dbService, testConfig, upstreamServer.URL, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -104,7 +104,8 @@ func TestNewOpenAIProxy_NoKeysInDB(t *testing.T) {
 	dbService, _ := setupTestDB(t)
 
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(dbService, "http://localhost", false, testLogger)
+	testConfig := &config.Config{Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	proxy, err := newOpenAIProxyWithURL(dbService, testConfig, "http://localhost", testLogger)
 	if err != nil {
 		t.Fatalf("newOpenAIProxyWithURL should not return an error when no keys are in the database, but got: %v", err)
 	}
@@ -120,7 +121,8 @@ func TestOpenAIProxy_ServeHTTP_NoKeys(t *testing.T) {
 	dbService, _ := setupTestDB(t)
 
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(dbService, "http://localhost", false, testLogger)
+	testConfig := &config.Config{Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	proxy, err := newOpenAIProxyWithURL(dbService, testConfig, "http://localhost", testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -146,7 +148,8 @@ func TestOpenAIProxy_ServeHTTP_KeysRemoved(t *testing.T) {
 	gormDB.Create(&key)
 
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(dbService, "http://localhost", false, testLogger)
+	testConfig := &config.Config{Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	proxy, err := newOpenAIProxyWithURL(dbService, testConfig, "http://localhost", testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -183,7 +186,8 @@ func TestNewOpenAIProxy_UrlParseError(t *testing.T) {
 
 	// Pass an invalid URL with a control character to force a parse error
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	_, err := newOpenAIProxyWithURL(dbService, "http://\x7f.com", false, testLogger)
+	testConfig := &config.Config{Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	_, err := newOpenAIProxyWithURL(dbService, testConfig, "http://\x7f.com", testLogger)
 	if err == nil {
 		t.Error("Expected an error from newOpenAIProxyWithURL when URL parsing fails, but got nil")
 	}
@@ -205,7 +209,8 @@ func TestOpenAIProxy_DebugLogging(t *testing.T) {
 	testLogger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// Create the proxy with debug enabled
-	proxy, err := newOpenAIProxyWithURL(dbService, upstreamServer.URL, true, testLogger)
+	testConfig := &config.Config{Debug: true, Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	proxy, err := newOpenAIProxyWithURL(dbService, testConfig, upstreamServer.URL, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -264,7 +269,8 @@ func TestOpenAIProxy_KeyDisablingAndReactivation(t *testing.T) {
 
 	// --- Proxy Setup ---
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(dbService, upstreamServer.URL, false, testLogger)
+	testConfig := &config.Config{Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	proxy, err := newOpenAIProxyWithURL(dbService, testConfig, upstreamServer.URL, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -350,7 +356,8 @@ func TestOpenAIProxy_keyUpdater(t *testing.T) {
 	gormDB.Create(&model.GeminiKey{Key: "key1", Status: "active"})
 
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(dbService, "http://localhost", false, testLogger)
+	testConfig := &config.Config{Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	proxy, err := newOpenAIProxyWithURL(dbService, testConfig, "http://localhost", testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}

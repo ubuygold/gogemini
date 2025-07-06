@@ -72,7 +72,7 @@ func main() {
 
 	// Start the scheduler
 	// Start the scheduler
-	s := scheduler.NewScheduler(dbService)
+	s := scheduler.NewScheduler(dbService, cfg)
 	s.Start()
 	log.Info("Scheduler started")
 
@@ -84,7 +84,7 @@ func main() {
 	}
 
 	// Create the new reverse proxy for OpenAI
-	openaiProxy, err := proxy.NewOpenAIProxy(dbService, cfg.Debug, log)
+	openaiProxy, err := proxy.NewOpenAIProxy(dbService, cfg, log)
 	if err != nil {
 		log.Error("Error creating OpenAI proxy", "error", err)
 		os.Exit(1)
@@ -102,7 +102,7 @@ func main() {
 	}
 
 	// Setup admin routes
-	admin.SetupRoutes(router, dbService)
+	admin.SetupRoutes(router, dbService, cfg)
 
 	// Create a group for Gemini routes
 	geminiHandlerFunc := func(c *gin.Context) {

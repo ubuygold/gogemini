@@ -5,6 +5,8 @@ import (
 	"gogemini/internal/config"
 	"gogemini/internal/db"
 	"gogemini/internal/model"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,8 +16,9 @@ import (
 // setupTestDB creates a new in-memory SQLite database for testing.
 func setupTestDB(t *testing.T) (db.Service, *gorm.DB) {
 	t.Helper()
-	// Use the test name to ensure a unique database for each test, preventing interference.
-	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
+	// Use a temporary file-based database for each test to ensure isolation.
+	dbPath := fmt.Sprintf("%s/gogemini_test.db", t.TempDir())
+	dsn := dbPath
 	service, err := db.NewService(config.DatabaseConfig{
 		Type: "sqlite",
 		DSN:  dsn,
@@ -45,16 +48,14 @@ func TestScheduler_ResetUsageJob(t *testing.T) {
 	assert.NoError(t, err)
 
 	// 2. Create and start the scheduler
-	scheduler := NewScheduler(dbService)
+	testConfig := &config.Config{Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	scheduler := NewScheduler(dbService, testConfig)
 	scheduler.Start()
 	// Stop the scheduler when the test finishes to clean up the cron goroutine.
 	defer scheduler.Stop()
 
-	// 3. Manually trigger the job
-	// We expect exactly one job to be scheduled.
-	assert.Len(t, scheduler.c.Entries(), 1, "Expected one cron job to be scheduled")
-	jobEntry := scheduler.c.Entries()[0]
-	jobEntry.Job.Run() // Run the job immediately
+	// 3. Manually trigger the job by calling the method directly
+	scheduler.resetAPIKeyUsage()
 
 	// 4. Verify that the usage counts have been reset
 	var updatedKeys []model.APIKey
@@ -69,9 +70,51 @@ func TestScheduler_ResetUsageJob(t *testing.T) {
 
 func TestNewScheduler(t *testing.T) {
 	dbService, _ := setupTestDB(t)
-	scheduler := NewScheduler(dbService)
+	testConfig := &config.Config{Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	scheduler := NewScheduler(dbService, testConfig)
 	assert.NotNil(t, scheduler)
 	assert.NotNil(t, scheduler.c)
 	assert.NotNil(t, scheduler.db)
 	assert.Equal(t, dbService, scheduler.db)
+}
+
+func TestScheduler_CheckKeysJob(t *testing.T) {
+	dbService, gormDB := setupTestDB(t)
+
+	// --- Mock Gemini API Server ---
+	mockServer := http.NewServeMux()
+	mockServer.HandleFunc("/v1beta/models/gemini-pro", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		if key == "key-good" {
+			w.WriteHeader(http.StatusOK)
+		} else if key == "key-bad" {
+			w.WriteHeader(http.StatusForbidden)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	})
+	testServer := httptest.NewServer(mockServer)
+	defer testServer.Close()
+
+	// --- Test Data ---
+	gormDB.Create(&model.GeminiKey{Key: "key-good", Status: "active", FailureCount: 1})
+	gormDB.Create(&model.GeminiKey{Key: "key-bad", Status: "active", FailureCount: 2})
+
+	// --- Scheduler Setup & Run ---
+	testConfig := &config.Config{Proxy: config.ProxyConfig{DisableKeyThreshold: 3}}
+	scheduler := NewScheduler(dbService, testConfig)
+
+	// Manually run the job, passing the mock server's URL
+	scheduler.checkAllGeminiKeys(testServer.URL)
+
+	// --- Verification ---
+	var goodKey model.GeminiKey
+	gormDB.Where("key = ?", "key-good").First(&goodKey)
+	assert.Equal(t, 0, goodKey.FailureCount, "Failure count for good key should be reset")
+	assert.Equal(t, "active", goodKey.Status, "Good key should remain active")
+
+	var badKey model.GeminiKey
+	gormDB.Where("key = ?", "key-bad").First(&badKey)
+	assert.Equal(t, 3, badKey.FailureCount, "Failure count for bad key should be incremented")
+	assert.Equal(t, "disabled", badKey.Status, "Bad key should be disabled")
 }

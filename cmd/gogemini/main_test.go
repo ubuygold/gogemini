@@ -7,7 +7,21 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"gogemini/internal/admin"
+	"gogemini/internal/config"
+	"gogemini/internal/db"
+	"os"
+
 	"github.com/gin-gonic/gin"
+
+	"encoding/json"
+	"gogemini/internal/auth"
+	"gogemini/internal/balancer"
+	"gogemini/internal/logger"
+	"gogemini/internal/model"
+	"gogemini/internal/proxy"
+	"gogemini/internal/scheduler"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -63,6 +77,56 @@ func TestCustomRecovery_AbortHandler(t *testing.T) {
 	assert.Contains(t, logBuf.String(), "Client connection aborted")
 }
 
+func TestAdminRoutesE2E(t *testing.T) {
+	// Create a temporary config file for the test
+	const tempConfig = `
+port: 8081
+debug: false
+database:
+  type: "sqlite"
+  dsn: "file::memory:"
+admin:
+  password: "e2e-test-password"
+`
+	configPath := "config_test.yaml"
+	err := os.WriteFile(configPath, []byte(tempConfig), 0644)
+	assert.NoError(t, err)
+	defer os.Remove(configPath)
+
+	// Load config
+	cfg, _, err := config.LoadConfig(configPath)
+	assert.NoError(t, err)
+
+	// Setup router
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	dbService, err := db.NewService(cfg.Database)
+	assert.NoError(t, err)
+	admin.SetupRoutes(router, dbService, cfg)
+
+	// --- Test Cases ---
+
+	// 1. No Auth
+	req, _ := http.NewRequest(http.MethodGet, "/admin/gemini-keys", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	assert.Equal(t, http.StatusUnauthorized, resp.Code)
+
+	// 2. Wrong Password
+	req, _ = http.NewRequest(http.MethodGet, "/admin/gemini-keys", nil)
+	req.SetBasicAuth("admin", "wrong-password")
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	assert.Equal(t, http.StatusUnauthorized, resp.Code)
+
+	// 3. Correct Password
+	req, _ = http.NewRequest(http.MethodGet, "/admin/gemini-keys", nil)
+	req.SetBasicAuth("admin", "e2e-test-password")
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	assert.Equal(t, http.StatusOK, resp.Code)
+}
+
 // closeNotifier is a custom ResponseWriter that implements http.CloseNotifier
 type closeNotifier struct {
 	*httptest.ResponseRecorder
@@ -97,4 +161,127 @@ func (cn *closeNotifier) Body() *bytes.Buffer {
 
 func (cn *closeNotifier) Flush() {
 	// no-op
+}
+
+func TestProxyRoutesE2E(t *testing.T) {
+	// 1. Setup: Create config, start services, and setup router
+	const tempConfig = `
+port: 8082
+debug: false
+database:
+  type: "sqlite"
+  dsn: "file::memory:"
+admin:
+  password: "proxy-e2e-password"
+proxy:
+  disable_key_threshold: 3
+`
+	configPath := "config_proxy_test.yaml"
+	err := os.WriteFile(configPath, []byte(tempConfig), 0644)
+	assert.NoError(t, err)
+	defer os.Remove(configPath)
+
+	cfg, _, err := config.LoadConfig(configPath)
+	assert.NoError(t, err)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	log := logger.New(cfg.Debug)
+	dbService, err := db.NewService(cfg.Database)
+	assert.NoError(t, err)
+
+	// Manually add a gemini key for the balancer to start
+	err = dbService.CreateGeminiKey(&model.GeminiKey{Key: "fake-gemini-key-for-testing", Status: "active"})
+	assert.NoError(t, err)
+
+	// Setup all routes
+	admin.SetupRoutes(router, dbService, cfg)
+
+	geminiHandler, err := balancer.NewBalancer(dbService, log)
+	assert.NoError(t, err)
+	defer geminiHandler.Close()
+	openaiProxy, err := proxy.NewOpenAIProxy(dbService, cfg, log)
+	assert.NoError(t, err)
+	defer openaiProxy.Close()
+	s := scheduler.NewScheduler(dbService, cfg)
+	s.Start() // Start scheduler for key checks
+	defer s.Stop()
+
+	geminiHandlerFunc := func(c *gin.Context) {
+		http.StripPrefix("/gemini", geminiHandler).ServeHTTP(c.Writer, c.Request)
+	}
+	geminiGroup := router.Group("/gemini")
+	geminiGroup.Use(auth.AuthMiddleware(dbService.GetDB()))
+	geminiGroup.Any("/*path", geminiHandlerFunc)
+
+	openaiHandlerFunc := func(c *gin.Context) {
+		http.StripPrefix("/openai", openaiProxy).ServeHTTP(c.Writer, c.Request)
+	}
+	openaiGroup := router.Group("/openai")
+	openaiGroup.Use(auth.AuthMiddleware(dbService.GetDB()))
+	openaiGroup.Any("/*path", openaiHandlerFunc)
+
+	// 2. Create a client API key via the admin endpoint
+	createKeyBody := `{"key": "test-client-key-e2e"}`
+	req, _ := http.NewRequest(http.MethodPost, "/admin/client-keys", bytes.NewBufferString(createKeyBody))
+	req.SetBasicAuth("admin", "proxy-e2e-password")
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	assert.Equal(t, http.StatusCreated, resp.Code)
+
+	var createdAPIKey model.APIKey
+	err = json.Unmarshal(resp.Body.Bytes(), &createdAPIKey)
+	assert.NoError(t, err)
+	assert.Equal(t, "test-client-key-e2e", createdAPIKey.Key)
+
+	// 3. Test proxy endpoints with the new key
+	testCases := []struct {
+		name string
+		path string
+	}{
+		{"Gemini Proxy", "/gemini/v1/models"},
+		{"OpenAI Proxy", "/openai/v1/chat/completions"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name+" No Auth", func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, tc.path, nil)
+			resp := httptest.NewRecorder()
+			router.ServeHTTP(resp, req)
+			assert.Equal(t, http.StatusUnauthorized, resp.Code)
+		})
+
+		t.Run(tc.name+" Wrong Auth", func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer wrong-key")
+			resp := httptest.NewRecorder()
+			router.ServeHTTP(resp, req)
+			assert.Equal(t, http.StatusUnauthorized, resp.Code)
+		})
+
+		t.Run(tc.name+" Correct Auth", func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodPost, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer "+createdAPIKey.Key)
+			// Use the closeNotifier to prevent panic in ReverseProxy
+			rr := httptest.NewRecorder()
+			closeNotifier := &closeNotifier{rr, make(chan bool, 1)}
+			router.ServeHTTP(closeNotifier, req)
+
+			// The request is expected to be proxied to the upstream API.
+			// Since we are not providing a valid request body or using a real API key,
+			// the upstream service will reject the request. We check for the specific
+			// error codes returned by the respective services for our malformed requests.
+			// This confirms that authentication passed and the request was proxied.
+			expectedStatus := 0
+			if tc.name == "Gemini Proxy" {
+				// Google's API returns 404 for POST to /v1/models
+				expectedStatus = http.StatusNotFound
+			} else {
+				// OpenAI's API returns 400 for an empty body on chat completions
+				expectedStatus = http.StatusBadRequest
+			}
+			assert.Equal(t, expectedStatus, rr.Code)
+		})
+	}
 }

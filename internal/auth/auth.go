@@ -58,3 +58,15 @@ func AuthMiddleware(db *gorm.DB) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+func AdminAuthMiddleware(adminPassword string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user, password, hasAuth := c.Request.BasicAuth()
+		if !hasAuth || user != "admin" || password != adminPassword {
+			c.Header("WWW-Authenticate", `Basic realm="Restricted"`)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
+		c.Next()
+	}
+}

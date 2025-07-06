@@ -13,9 +13,21 @@ type DatabaseConfig struct {
 	DSN  string `yaml:"dsn"`
 }
 
+// ProxyConfig holds configuration specific to the proxy.
+type ProxyConfig struct {
+	DisableKeyThreshold int `yaml:"disable_key_threshold"`
+}
+
+// AdminConfig holds configuration for the admin panel.
+type AdminConfig struct {
+	Password string `yaml:"password"`
+}
+
 // Config holds the configuration for the load balancer.
 type Config struct {
 	Database DatabaseConfig `yaml:"database"`
+	Proxy    ProxyConfig    `yaml:"proxy"`
+	Admin    AdminConfig    `yaml:"admin"`
 	Port     int            `yaml:"port"`
 	Debug    bool           `yaml:"debug"`
 }
@@ -32,6 +44,12 @@ func LoadConfig(path string) (*Config, string, error) {
 	err = yaml.Unmarshal(data, &config)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	// Set default values
+	if config.Proxy.DisableKeyThreshold == 0 {
+		config.Proxy.DisableKeyThreshold = 3
+		warning = "proxy.disable_key_threshold not set, using default value of 3"
 	}
 
 	if config.Database.Type == "" || config.Database.DSN == "" {

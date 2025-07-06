@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"gogemini/internal/config"
 	"gogemini/internal/db"
 	"gogemini/internal/model"
 	"log/slog"
@@ -35,7 +36,7 @@ type contextKey string
 const geminiKeyContextKey = contextKey("geminiKey")
 
 // newOpenAIProxyWithURL is the internal constructor that allows for custom target URLs, making it testable.
-func newOpenAIProxyWithURL(dbService db.Service, target string, debug bool, logger *slog.Logger) (*OpenAIProxy, error) {
+func newOpenAIProxyWithURL(dbService db.Service, cfg *config.Config, target string, logger *slog.Logger) (*OpenAIProxy, error) {
 	initialKeys, err := dbService.LoadActiveGeminiKeys()
 	if err != nil {
 		return nil, fmt.Errorf("failed to perform initial load of Gemini keys for proxy: %w", err)
@@ -52,11 +53,11 @@ func newOpenAIProxyWithURL(dbService db.Service, target string, debug bool, logg
 	proxy := &OpenAIProxy{
 		geminiKeys:              extractKeys(initialKeys),
 		targetURL:               targetURL,
-		debug:                   debug,
+		debug:                   cfg.Debug,
 		logger:                  logger.With("component", "proxy"),
 		database:                dbService,
 		stopChan:                make(chan struct{}),
-		disableThreshold:        3, // Disable after 3 consecutive failures
+		disableThreshold:        cfg.Proxy.DisableKeyThreshold,
 		temporarilyDisabledKeys: make(map[string]struct{}),
 	}
 
@@ -107,8 +108,8 @@ func newOpenAIProxyWithURL(dbService db.Service, target string, debug bool, logg
 }
 
 // NewOpenAIProxy creates a new OpenAIProxy with the default Google API target.
-func NewOpenAIProxy(dbService db.Service, debug bool, logger *slog.Logger) (*OpenAIProxy, error) {
-	return newOpenAIProxyWithURL(dbService, "https://generativelanguage.googleapis.com", debug, logger)
+func NewOpenAIProxy(dbService db.Service, cfg *config.Config, logger *slog.Logger) (*OpenAIProxy, error) {
+	return newOpenAIProxyWithURL(dbService, cfg, "https://generativelanguage.googleapis.com", logger)
 }
 
 func (p *OpenAIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {

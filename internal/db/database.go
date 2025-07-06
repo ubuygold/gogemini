@@ -14,16 +14,28 @@ import (
 
 // Service defines the interface for database operations.
 type Service interface {
+	// Gemini Key Management
+	CreateGeminiKey(key *model.GeminiKey) error
 	BatchAddGeminiKeys(keys []string) error
 	BatchDeleteGeminiKeys(keys []string) error
-	// The following methods are not used by the admin handler, but are included for completeness
-	// and to allow other components to use the service interface.
+	ListGeminiKeys() ([]model.GeminiKey, error)
+	GetGeminiKey(id uint) (*model.GeminiKey, error)
+	UpdateGeminiKey(key *model.GeminiKey) error
+	DeleteGeminiKey(id uint) error
 	LoadActiveGeminiKeys() ([]model.GeminiKey, error)
 	HandleGeminiKeyFailure(key string, disableThreshold int) (bool, error)
 	ResetGeminiKeyFailureCount(key string) error
 	IncrementGeminiKeyUsageCount(key string) error
+
+	// Client API Key Management
+	CreateAPIKey(key *model.APIKey) error
+	ListAPIKeys() ([]model.APIKey, error)
+	GetAPIKey(id uint) (*model.APIKey, error)
+	UpdateAPIKey(key *model.APIKey) error
+	DeleteAPIKey(id uint) error
 	IncrementAPIKeyUsageCount(key string) error
 	ResetAllAPIKeyUsage() error
+
 	GetDB() *gorm.DB
 }
 
@@ -157,6 +169,90 @@ func (s *gormService) BatchDeleteGeminiKeys(keys []string) error {
 	result := s.db.Unscoped().Where("key IN ?", keys).Delete(&model.GeminiKey{})
 	if result.Error != nil {
 		return fmt.Errorf("failed to batch delete gemini keys: %w", result.Error)
+	}
+	return nil
+}
+
+func (s *gormService) CreateGeminiKey(key *model.GeminiKey) error {
+	result := s.db.Create(key)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create gemini key: %w", result.Error)
+	}
+	return nil
+}
+
+func (s *gormService) ListGeminiKeys() ([]model.GeminiKey, error) {
+	var keys []model.GeminiKey
+	result := s.db.Find(&keys)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to list gemini keys: %w", result.Error)
+	}
+	return keys, nil
+}
+
+func (s *gormService) GetGeminiKey(id uint) (*model.GeminiKey, error) {
+	var key model.GeminiKey
+	result := s.db.First(&key, id)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get gemini key %d: %w", id, result.Error)
+	}
+	return &key, nil
+}
+
+func (s *gormService) UpdateGeminiKey(key *model.GeminiKey) error {
+	result := s.db.Save(key)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update gemini key %d: %w", key.ID, result.Error)
+	}
+	return nil
+}
+
+func (s *gormService) DeleteGeminiKey(id uint) error {
+	result := s.db.Unscoped().Delete(&model.GeminiKey{}, id)
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete gemini key %d: %w", id, result.Error)
+	}
+	return nil
+}
+
+func (s *gormService) CreateAPIKey(key *model.APIKey) error {
+	result := s.db.Create(key)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create api key: %w", result.Error)
+	}
+	return nil
+}
+
+func (s *gormService) ListAPIKeys() ([]model.APIKey, error) {
+	var keys []model.APIKey
+	result := s.db.Find(&keys)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to list api keys: %w", result.Error)
+	}
+	return keys, nil
+}
+
+func (s *gormService) GetAPIKey(id uint) (*model.APIKey, error) {
+	var key model.APIKey
+	result := s.db.First(&key, id)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get api key %d: %w", id, result.Error)
+	}
+	return &key, nil
+}
+
+func (s *gormService) UpdateAPIKey(key *model.APIKey) error {
+	result := s.db.Save(key)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update api key %d: %w", key.ID, result.Error)
+	}
+	return nil
+}
+
+func (s *gormService) DeleteAPIKey(id uint) error {
+	result := s.db.Unscoped().Delete(&model.APIKey{}, id)
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete api key %d: %w", id, result.Error)
 	}
 	return nil
 }

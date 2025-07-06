@@ -68,3 +68,40 @@ func TestAuthMiddleware(t *testing.T) {
 		})
 	}
 }
+
+func TestAdminAuthMiddleware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const adminPassword = "test-password"
+
+	router := gin.New()
+	router.Use(AdminAuthMiddleware(adminPassword))
+	router.GET("/", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	testCases := []struct {
+		name           string
+		username       string
+		password       string
+		expectedStatus int
+	}{
+		{"no auth", "", "", http.StatusUnauthorized},
+		{"wrong username", "user", adminPassword, http.StatusUnauthorized},
+		{"wrong password", "admin", "wrong-password", http.StatusUnauthorized},
+		{"correct auth", "admin", adminPassword, http.StatusOK},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "/", nil)
+			if tc.username != "" || tc.password != "" {
+				req.SetBasicAuth(tc.username, tc.password)
+			}
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			if rr.Code != tc.expectedStatus {
+				t.Errorf("Expected status code %d, got %d", tc.expectedStatus, rr.Code)
+			}
+		})
+	}
+}

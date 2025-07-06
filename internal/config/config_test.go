@@ -11,6 +11,8 @@ func TestLoadConfig(t *testing.T) {
 			"database:\n" +
 				"  type: \"sqlite\"\n" +
 				"  dsn: \"gogemini.db\"\n" +
+				"proxy:\n" +
+				"  disable_key_threshold: 5\n" +
 				"port: 8080\n" +
 				"debug: true\n")
 		tmpfile, _ := os.CreateTemp("", "config.yaml")
@@ -36,6 +38,9 @@ func TestLoadConfig(t *testing.T) {
 		}
 		if !config.Debug {
 			t.Error("Expected debug to be true")
+		}
+		if config.Proxy.DisableKeyThreshold != 5 {
+			t.Errorf("Expected disable_key_threshold to be 5, got %d", config.Proxy.DisableKeyThreshold)
 		}
 	})
 
