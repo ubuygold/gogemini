@@ -1,10 +1,11 @@
-package main
+package config
 
 import (
 	"fmt"
-	"gopkg.in/yaml.v2"
 	"log"
 	"os"
+
+	"gopkg.in/yaml.v2"
 )
 
 // Config holds the configuration for the load balancer.
@@ -15,8 +16,8 @@ type Config struct {
 	Debug      bool     `yaml:"debug"`
 }
 
-// loadConfig reads and parses the configuration file.
-func loadConfig(path string) (*Config, error) {
+// LoadConfig reads and parses the configuration file.
+func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)

@@ -1,7 +1,8 @@
-package main
+package balancer
 
 import (
 	"fmt"
+	"gogemini/internal/config"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -18,8 +19,8 @@ type Balancer struct {
 }
 
 // NewBalancer creates a new Balancer that acts as a reverse proxy.
-func NewBalancer(config *Config) (*Balancer, error) {
-	if len(config.GeminiKeys) == 0 {
+func NewBalancer(cfg *config.Config) (*Balancer, error) {
+	if len(cfg.GeminiKeys) == 0 {
 		return nil, fmt.Errorf("no Gemini API keys provided in configuration")
 	}
 
@@ -31,7 +32,7 @@ func NewBalancer(config *Config) (*Balancer, error) {
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 
 	balancer := &Balancer{
-		keys:  config.GeminiKeys,
+		keys:  cfg.GeminiKeys,
 		proxy: proxy,
 	}
 

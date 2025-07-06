@@ -1,4 +1,4 @@
-package main
+package proxy
 
 import (
 	"net/http"
@@ -16,8 +16,9 @@ type OpenAIProxy struct {
 	targetURL    *url.URL
 }
 
-func NewOpenAIProxy(geminiKeys []string) (*OpenAIProxy, error) {
-	targetURL, err := url.Parse("https://generativelanguage.googleapis.com")
+// newOpenAIProxyWithURL is the internal constructor that allows for custom target URLs, making it testable.
+func newOpenAIProxyWithURL(geminiKeys []string, target string) (*OpenAIProxy, error) {
+	targetURL, err := url.Parse(target)
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +53,11 @@ func NewOpenAIProxy(geminiKeys []string) (*OpenAIProxy, error) {
 	}
 
 	return proxy, nil
+}
+
+// NewOpenAIProxy creates a new OpenAIProxy with the default Google API target.
+func NewOpenAIProxy(geminiKeys []string) (*OpenAIProxy, error) {
+	return newOpenAIProxyWithURL(geminiKeys, "https://generativelanguage.googleapis.com")
 }
 
 func (p *OpenAIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {

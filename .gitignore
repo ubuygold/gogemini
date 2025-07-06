@@ -14,9 +14,10 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-gogemini
+./gogemini
 .opencode
 erl_crash.dump
 config.yaml
 OpenCode.md
 .clinerules
+.goose

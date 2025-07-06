@@ -1,10 +1,9 @@
-package main
+package proxy
 
 import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -43,11 +42,10 @@ func TestOpenAIProxy(t *testing.T) {
 	defer upstreamServer.Close()
 
 	// Create the proxy and point it to the mock upstream server
-	proxy, err := NewOpenAIProxy([]string{"test-key"})
+	proxy, err := newOpenAIProxyWithURL([]string{"test-key"}, upstreamServer.URL)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
-	proxy.targetURL, _ = url.Parse(upstreamServer.URL) // Override target URL for testing
 
 	// Create a Gin router and route to the proxy
 	router := gin.New()
@@ -67,5 +65,13 @@ func TestOpenAIProxy(t *testing.T) {
 	}
 	if rr.Body.String() != "OK" {
 		t.Errorf("Expected body 'OK', got '%s'", rr.Body.String())
+	}
+}
+
+func TestNewOpenAIProxy_UrlParseError(t *testing.T) {
+	// Pass an invalid URL with a control character to force a parse error
+	_, err := newOpenAIProxyWithURL([]string{"test-key"}, "http://\x7f.com")
+	if err == nil {
+		t.Error("Expected an error from newOpenAIProxyWithURL when URL parsing fails, but got nil")
 	}
 }
