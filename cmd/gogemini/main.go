@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"gogemini/internal/admin"
 	"gogemini/internal/auth"
 	"gogemini/internal/balancer"
 	"gogemini/internal/config"
@@ -61,27 +62,29 @@ func main() {
 		log.Warn(warning)
 	}
 
-	// Initialize database
-	database, err := db.Init(cfg.Database)
+	// Initialize database service
+	dbService, err := db.NewService(cfg.Database)
 	if err != nil {
-		log.Error("Error initializing database", "error", err)
+		log.Error("Error initializing database service", "error", err)
 		os.Exit(1)
 	}
-	log.Info("Database initialized", "type", cfg.Database.Type)
+	log.Info("Database service initialized", "type", cfg.Database.Type)
 
 	// Start the scheduler
-	scheduler.StartScheduler(database)
+	// Start the scheduler
+	s := scheduler.NewScheduler(dbService)
+	s.Start()
 	log.Info("Scheduler started")
 
 	// Create the new SDK-based handler for Gemini
-	geminiHandler, err := balancer.NewBalancer(database, log)
+	geminiHandler, err := balancer.NewBalancer(dbService, log)
 	if err != nil {
 		log.Error("Error creating Gemini handler", "error", err)
 		os.Exit(1)
 	}
 
 	// Create the new reverse proxy for OpenAI
-	openaiProxy, err := proxy.NewOpenAIProxy(database, cfg.Debug, log)
+	openaiProxy, err := proxy.NewOpenAIProxy(dbService, cfg.Debug, log)
 	if err != nil {
 		log.Error("Error creating OpenAI proxy", "error", err)
 		os.Exit(1)
@@ -98,12 +101,15 @@ func main() {
 		router.Use(gin.Logger())
 	}
 
+	// Setup admin routes
+	admin.SetupRoutes(router, dbService)
+
 	// Create a group for Gemini routes
 	geminiHandlerFunc := func(c *gin.Context) {
 		http.StripPrefix("/gemini", geminiHandler).ServeHTTP(c.Writer, c.Request)
 	}
 	geminiGroup := router.Group("/gemini")
-	geminiGroup.Use(auth.AuthMiddleware(database))
+	geminiGroup.Use(auth.AuthMiddleware(dbService.GetDB()))
 	geminiGroup.GET("/*path", geminiHandlerFunc)
 	geminiGroup.POST("/*path", geminiHandlerFunc)
 
@@ -112,7 +118,7 @@ func main() {
 		http.StripPrefix("/openai", openaiProxy).ServeHTTP(c.Writer, c.Request)
 	}
 	openaiGroup := router.Group("/openai")
-	openaiGroup.Use(auth.AuthMiddleware(database))
+	openaiGroup.Use(auth.AuthMiddleware(dbService.GetDB()))
 	openaiGroup.GET("/*path", openaiHandlerFunc)
 	openaiGroup.POST("/*path", openaiHandlerFunc)
 

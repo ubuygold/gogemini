@@ -2,44 +2,39 @@ package proxy
 
 import (
 	"bytes"
+	"fmt"
+	"gogemini/internal/config"
+	"gogemini/internal/db"
 	"gogemini/internal/model"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 // setupTestDB creates a new in-memory SQLite database for testing.
-func setupTestDB(t *testing.T) (*gorm.DB, func()) {
+func setupTestDB(t *testing.T) (db.Service, *gorm.DB) {
 	t.Helper()
-	// Note: Using a file-based SQLite for tests as in-memory can have issues with concurrent access.
-	tmpfile, err := os.CreateTemp("", "test_proxy_*.db")
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
+	service, err := db.NewService(config.DatabaseConfig{
+		Type: "sqlite",
+		DSN:  dsn,
+	})
 	if err != nil {
-		t.Fatalf("Failed to create temp file for test db: %v", err)
+		t.Fatalf("Failed to create test db service: %v", err)
 	}
-	db, err := gorm.Open(sqlite.Open(tmpfile.Name()), &gorm.Config{})
+	err = service.GetDB().AutoMigrate(&model.GeminiKey{})
 	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
+		t.Fatalf("Failed to auto-migrate schema: %v", err)
 	}
-	err = db.AutoMigrate(&model.APIKey{}, &model.GeminiKey{})
-	if err != nil {
-		t.Fatalf("Failed to auto-migrate database: %v", err)
-	}
-	cleanup := func() {
-		sqlDB, _ := db.DB()
-		sqlDB.Close()
-		os.Remove(tmpfile.Name())
-	}
-	return db, cleanup
+	return service, service.GetDB()
 }
 
 // closeNotifierRecorder is a custom ResponseRecorder that implements http.CloseNotifier
@@ -61,10 +56,9 @@ func (r *closeNotifierRecorder) CloseNotify() <-chan bool {
 
 func TestOpenAIProxy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
+	dbService, gormDB := setupTestDB(t)
 
-	db.Create(&model.GeminiKey{Key: "test-key", Status: "active"})
+	gormDB.Create(&model.GeminiKey{Key: "test-key", Status: "active"})
 
 	// Create a mock upstream server
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +73,7 @@ func TestOpenAIProxy(t *testing.T) {
 
 	// Create the proxy and point it to the mock upstream server
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(db, upstreamServer.URL, false, testLogger)
+	proxy, err := newOpenAIProxyWithURL(dbService, upstreamServer.URL, false, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -107,11 +101,10 @@ func TestOpenAIProxy(t *testing.T) {
 }
 
 func TestNewOpenAIProxy_NoKeysInDB(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
+	dbService, _ := setupTestDB(t)
 
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(db, "http://localhost", false, testLogger)
+	proxy, err := newOpenAIProxyWithURL(dbService, "http://localhost", false, testLogger)
 	if err != nil {
 		t.Fatalf("newOpenAIProxyWithURL should not return an error when no keys are in the database, but got: %v", err)
 	}
@@ -124,11 +117,10 @@ func TestNewOpenAIProxy_NoKeysInDB(t *testing.T) {
 }
 
 func TestOpenAIProxy_ServeHTTP_NoKeys(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
+	dbService, _ := setupTestDB(t)
 
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(db, "http://localhost", false, testLogger)
+	proxy, err := newOpenAIProxyWithURL(dbService, "http://localhost", false, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -147,15 +139,14 @@ func TestOpenAIProxy_ServeHTTP_NoKeys(t *testing.T) {
 }
 
 func TestOpenAIProxy_ServeHTTP_KeysRemoved(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
+	dbService, gormDB := setupTestDB(t)
 
 	// 1. Start with a key
 	key := model.GeminiKey{Key: "key1", Status: "active"}
-	db.Create(&key)
+	gormDB.Create(&key)
 
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(db, "http://localhost", false, testLogger)
+	proxy, err := newOpenAIProxyWithURL(dbService, "http://localhost", false, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -164,7 +155,7 @@ func TestOpenAIProxy_ServeHTTP_KeysRemoved(t *testing.T) {
 	}
 
 	// 2. Remove the key from the database
-	db.Delete(&key)
+	gormDB.Delete(&key)
 
 	// 3. Manually trigger the key updater
 	proxy.updateKeys()
@@ -187,13 +178,12 @@ func TestOpenAIProxy_ServeHTTP_KeysRemoved(t *testing.T) {
 }
 
 func TestNewOpenAIProxy_UrlParseError(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-	db.Create(&model.GeminiKey{Key: "test-key", Status: "active"})
+	dbService, gormDB := setupTestDB(t)
+	gormDB.Create(&model.GeminiKey{Key: "test-key", Status: "active"})
 
 	// Pass an invalid URL with a control character to force a parse error
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	_, err := newOpenAIProxyWithURL(db, "http://\x7f.com", false, testLogger)
+	_, err := newOpenAIProxyWithURL(dbService, "http://\x7f.com", false, testLogger)
 	if err == nil {
 		t.Error("Expected an error from newOpenAIProxyWithURL when URL parsing fails, but got nil")
 	}
@@ -201,9 +191,8 @@ func TestNewOpenAIProxy_UrlParseError(t *testing.T) {
 
 func TestOpenAIProxy_DebugLogging(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
-	db.Create(&model.GeminiKey{Key: "test-key-1234", Status: "active"})
+	dbService, gormDB := setupTestDB(t)
+	gormDB.Create(&model.GeminiKey{Key: "test-key-1234", Status: "active"})
 
 	// Create a mock upstream server
 	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +205,7 @@ func TestOpenAIProxy_DebugLogging(t *testing.T) {
 	testLogger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// Create the proxy with debug enabled
-	proxy, err := newOpenAIProxyWithURL(db, upstreamServer.URL, true, testLogger)
+	proxy, err := newOpenAIProxyWithURL(dbService, upstreamServer.URL, true, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -241,12 +230,11 @@ func TestOpenAIProxy_DebugLogging(t *testing.T) {
 
 func TestOpenAIProxy_KeyDisablingAndReactivation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
+	dbService, gormDB := setupTestDB(t)
 
 	// Setup initial keys
-	db.Create(&model.GeminiKey{Key: "key-good", Status: "active"})
-	db.Create(&model.GeminiKey{Key: "key-bad", Status: "active"})
+	gormDB.Create(&model.GeminiKey{Key: "key-good", Status: "active"})
+	gormDB.Create(&model.GeminiKey{Key: "key-bad", Status: "active"})
 
 	// --- Mock Upstream Server ---
 	var lastUsedKey string
@@ -276,7 +264,7 @@ func TestOpenAIProxy_KeyDisablingAndReactivation(t *testing.T) {
 
 	// --- Proxy Setup ---
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(db, upstreamServer.URL, false, testLogger)
+	proxy, err := newOpenAIProxyWithURL(dbService, upstreamServer.URL, false, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -299,7 +287,7 @@ func TestOpenAIProxy_KeyDisablingAndReactivation(t *testing.T) {
 	var disabledInDB bool
 	for i := 0; i < 10; i++ {
 		makeRequest()
-		db.Where("key = ?", "key-bad").First(&badKeyInDB)
+		gormDB.Where("key = ?", "key-bad").First(&badKeyInDB)
 		if badKeyInDB.Status == "disabled" {
 			disabledInDB = true
 			break
@@ -322,7 +310,7 @@ func TestOpenAIProxy_KeyDisablingAndReactivation(t *testing.T) {
 
 	// Verify in DB
 	var badKeyDB model.GeminiKey
-	db.Where("key = ?", "key-bad").First(&badKeyDB)
+	gormDB.Where("key = ?", "key-bad").First(&badKeyDB)
 	if badKeyDB.Status != "disabled" {
 		t.Errorf("Expected 'key-bad' to be 'disabled' in DB, but got '%s'", badKeyDB.Status)
 	}
@@ -334,7 +322,7 @@ func TestOpenAIProxy_KeyDisablingAndReactivation(t *testing.T) {
 	// The key is already marked as disabled in the DB, so the proxy won't use it
 	// until the keyUpdater runs. We simulate this by updating the key in the DB
 	// and then calling the updateKeys function manually.
-	db.Model(&model.GeminiKey{}).Where("key = ?", "key-bad").Updates(map[string]interface{}{"status": "active", "failure_count": 0})
+	gormDB.Model(&model.GeminiKey{}).Where("key = ?", "key-bad").Updates(map[string]interface{}{"status": "active", "failure_count": 0})
 
 	// Manually trigger key update
 	proxy.updateKeys()
@@ -357,20 +345,19 @@ func TestOpenAIProxy_KeyDisablingAndReactivation(t *testing.T) {
 }
 
 func TestOpenAIProxy_keyUpdater(t *testing.T) {
-	db, cleanup := setupTestDB(t)
-	defer cleanup()
+	dbService, gormDB := setupTestDB(t)
 
-	db.Create(&model.GeminiKey{Key: "key1", Status: "active"})
+	gormDB.Create(&model.GeminiKey{Key: "key1", Status: "active"})
 
 	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	proxy, err := newOpenAIProxyWithURL(db, "http://localhost", false, testLogger)
+	proxy, err := newOpenAIProxyWithURL(dbService, "http://localhost", false, testLogger)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
 	defer proxy.Close()
 
 	// Add a new key to the database
-	db.Create(&model.GeminiKey{Key: "key2", Status: "active"})
+	gormDB.Create(&model.GeminiKey{Key: "key2", Status: "active"})
 
 	// Manually call updateKeys
 	proxy.updateKeys()

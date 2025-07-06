@@ -9,10 +9,31 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-// Init initializes the database connection based on the provided configuration.
-func Init(cfg config.DatabaseConfig) (*gorm.DB, error) {
+// Service defines the interface for database operations.
+type Service interface {
+	BatchAddGeminiKeys(keys []string) error
+	BatchDeleteGeminiKeys(keys []string) error
+	// The following methods are not used by the admin handler, but are included for completeness
+	// and to allow other components to use the service interface.
+	LoadActiveGeminiKeys() ([]model.GeminiKey, error)
+	HandleGeminiKeyFailure(key string, disableThreshold int) (bool, error)
+	ResetGeminiKeyFailureCount(key string) error
+	IncrementGeminiKeyUsageCount(key string) error
+	IncrementAPIKeyUsageCount(key string) error
+	ResetAllAPIKeyUsage() error
+	GetDB() *gorm.DB
+}
+
+// gormService is an implementation of the Service interface that uses GORM.
+type gormService struct {
+	db *gorm.DB
+}
+
+// NewService creates a new Service with a database connection.
+func NewService(cfg config.DatabaseConfig) (Service, error) {
 	var dialector gorm.Dialector
 	switch cfg.Type {
 	case "sqlite":
@@ -36,14 +57,19 @@ func Init(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to auto-migrate database: %w", err)
 	}
 
-	return db, nil
+	return &gormService{db: db}, nil
 }
 
-// LoadActiveGeminiKeys retrieves all active Gemini keys from the database,
-// ordered by their usage count in ascending order.
-func LoadActiveGeminiKeys(db *gorm.DB) ([]model.GeminiKey, error) {
+// GetDB returns the underlying GORM DB instance.
+// This is useful for components that need direct DB access, like the scheduler.
+func (s *gormService) GetDB() *gorm.DB {
+	return s.db
+}
+
+// LoadActiveGeminiKeys retrieves all active Gemini keys from the database.
+func (s *gormService) LoadActiveGeminiKeys() ([]model.GeminiKey, error) {
 	var keys []model.GeminiKey
-	result := db.Model(&model.GeminiKey{}).
+	result := s.db.Model(&model.GeminiKey{}).
 		Where("status = ?", "active").
 		Order("usage_count asc").
 		Find(&keys)
@@ -54,11 +80,9 @@ func LoadActiveGeminiKeys(db *gorm.DB) ([]model.GeminiKey, error) {
 }
 
 // HandleGeminiKeyFailure increments the failure count for a key and disables it if the threshold is met.
-// It returns true if the key was disabled, false otherwise.
-func HandleGeminiKeyFailure(db *gorm.DB, key string, disableThreshold int) (bool, error) {
+func (s *gormService) HandleGeminiKeyFailure(key string, disableThreshold int) (bool, error) {
 	var disabled bool
-	err := db.Transaction(func(tx *gorm.DB) error {
-		// Atomically increment the failure count
+	err := s.db.Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&model.GeminiKey{}).Where("key = ?", key).UpdateColumn("failure_count", gorm.Expr("failure_count + 1"))
 		if result.Error != nil {
 			return result.Error
@@ -67,10 +91,9 @@ func HandleGeminiKeyFailure(db *gorm.DB, key string, disableThreshold int) (bool
 			return fmt.Errorf("key not found during failure count update: %s", key)
 		}
 
-		// Check if the key needs to be disabled
 		var geminiKey model.GeminiKey
 		if err := tx.Where("key = ?", key).First(&geminiKey).Error; err != nil {
-			return err // Should not happen if the update succeeded
+			return err
 		}
 
 		if geminiKey.FailureCount >= disableThreshold && geminiKey.Status == "active" {
@@ -79,36 +102,68 @@ func HandleGeminiKeyFailure(db *gorm.DB, key string, disableThreshold int) (bool
 			}
 			disabled = true
 		}
-
 		return nil
 	})
-
 	return disabled, err
 }
 
 // ResetGeminiKeyFailureCount resets the failure count for a given key.
-func ResetGeminiKeyFailureCount(db *gorm.DB, key string) error {
-	result := db.Model(&model.GeminiKey{}).Where("key = ?", key).Update("failure_count", 0)
+func (s *gormService) ResetGeminiKeyFailureCount(key string) error {
+	result := s.db.Model(&model.GeminiKey{}).Where("key = ?", key).Update("failure_count", 0)
 	if result.Error != nil {
 		return fmt.Errorf("failed to reset failure count for key %s: %w", key, result.Error)
 	}
-	// It's okay if RowsAffected is 0, the key might have been removed.
 	return nil
 }
 
 // IncrementGeminiKeyUsageCount atomically increments the usage count for a given key.
-func IncrementGeminiKeyUsageCount(db *gorm.DB, key string) error {
-	result := db.Model(&model.GeminiKey{}).Where("key = ?", key).UpdateColumn("usage_count", gorm.Expr("usage_count + 1"))
+func (s *gormService) IncrementGeminiKeyUsageCount(key string) error {
+	result := s.db.Model(&model.GeminiKey{}).Where("key = ?", key).UpdateColumn("usage_count", gorm.Expr("usage_count + 1"))
 	if result.Error != nil {
 		return fmt.Errorf("failed to increment usage count for key %s: %w", key, result.Error)
 	}
-	// It's okay if RowsAffected is 0, the key might have been removed or disabled in the meantime.
+	return nil
+}
+
+// BatchAddGeminiKeys adds multiple Gemini keys to the database in a single transaction.
+func (s *gormService) BatchAddGeminiKeys(keys []string) error {
+	if s.db.Error != nil {
+		return s.db.Error
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	var keyModels []model.GeminiKey
+	for _, key := range keys {
+		keyModels = append(keyModels, model.GeminiKey{Key: key, Status: "active"})
+	}
+
+	result := s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&keyModels)
+	if result.Error != nil {
+		return fmt.Errorf("failed to batch add gemini keys: %w", result.Error)
+	}
+	return nil
+}
+
+// BatchDeleteGeminiKeys removes multiple Gemini keys from the database.
+func (s *gormService) BatchDeleteGeminiKeys(keys []string) error {
+	if s.db.Error != nil {
+		return s.db.Error
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	result := s.db.Unscoped().Where("key IN ?", keys).Delete(&model.GeminiKey{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to batch delete gemini keys: %w", result.Error)
+	}
 	return nil
 }
 
 // IncrementAPIKeyUsageCount atomically increments the usage count for a given API key.
-func IncrementAPIKeyUsageCount(db *gorm.DB, key string) error {
-	result := db.Model(&model.APIKey{}).Where("key = ?", key).UpdateColumn("usage_count", gorm.Expr("usage_count + 1"))
+func (s *gormService) IncrementAPIKeyUsageCount(key string) error {
+	result := s.db.Model(&model.APIKey{}).Where("key = ?", key).UpdateColumn("usage_count", gorm.Expr("usage_count + 1"))
 	if result.Error != nil {
 		return fmt.Errorf("failed to increment usage count for api key %s: %w", key, result.Error)
 	}
@@ -116,8 +171,8 @@ func IncrementAPIKeyUsageCount(db *gorm.DB, key string) error {
 }
 
 // ResetAllAPIKeyUsage resets the usage count of all API keys to 0.
-func ResetAllAPIKeyUsage(db *gorm.DB) error {
-	result := db.Model(&model.APIKey{}).Where("usage_count > 0").Update("usage_count", 0)
+func (s *gormService) ResetAllAPIKeyUsage() error {
+	result := s.db.Model(&model.APIKey{}).Where("usage_count > 0").Update("usage_count", 0)
 	if result.Error != nil {
 		return fmt.Errorf("failed to reset all api key usage: %w", result.Error)
 	}

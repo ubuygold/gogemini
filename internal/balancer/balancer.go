@@ -13,24 +13,23 @@ import (
 	"sort"
 	"sync"
 	"time"
-
-	"gorm.io/gorm"
 )
 
 // Balancer holds the state of our load balancer.
 type Balancer struct {
-	mutex    sync.Mutex
-	wg       sync.WaitGroup
-	keys     []model.GeminiKey
-	proxy    *httputil.ReverseProxy
-	logger   *slog.Logger
-	db       *gorm.DB
-	stopChan chan struct{}
+	mutex       sync.Mutex
+	keys        []model.GeminiKey
+	proxy       *httputil.ReverseProxy
+	logger      *slog.Logger
+	db          db.Service
+	stopChan    chan struct{}
+	updateQueue chan string
+	wg          sync.WaitGroup
 }
 
 // NewBalancer creates a new Balancer that acts as a reverse proxy.
-func NewBalancer(database *gorm.DB, logger *slog.Logger) (*Balancer, error) {
-	initialKeys, err := db.LoadActiveGeminiKeys(database)
+func NewBalancer(dbService db.Service, logger *slog.Logger) (*Balancer, error) {
+	initialKeys, err := dbService.LoadActiveGeminiKeys()
 	if err != nil {
 		return nil, fmt.Errorf("failed to perform initial load of Gemini keys: %w", err)
 	}
@@ -46,15 +45,20 @@ func NewBalancer(database *gorm.DB, logger *slog.Logger) (*Balancer, error) {
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 
 	balancer := &Balancer{
-		keys:     initialKeys,
-		proxy:    proxy,
-		logger:   logger.With("component", "balancer"),
-		db:       database,
-		stopChan: make(chan struct{}),
+		keys:        initialKeys,
+		proxy:       proxy,
+		logger:      logger.With("component", "balancer"),
+		db:          dbService,
+		stopChan:    make(chan struct{}),
+		updateQueue: make(chan string, 100), // Buffered channel
 	}
 
-	// Start a background goroutine to periodically update the keys
-	go balancer.keyUpdater()
+	// Start a background goroutine to periodically update the keys from DB
+	go balancer.keyReloader()
+
+	// Start a background goroutine to process usage updates
+	balancer.wg.Add(1)
+	go balancer.usageUpdater()
 
 	proxy.Director = func(req *http.Request) {
 		key := balancer.getNextKey()
@@ -115,22 +119,14 @@ func (b *Balancer) getNextKey() string {
 	// Re-sort the slice to maintain the order for the next call.
 	b.sortKeys()
 
-	// Asynchronously update the usage count in the database.
-	b.wg.Add(1)
-	go func(key string) {
-		defer b.wg.Done()
-		err := db.IncrementGeminiKeyUsageCount(b.db, key)
-		if err != nil {
-			// Use a safe suffix for logging to avoid exposing the full key.
-			keySuffix := ""
-			if len(key) > 4 {
-				keySuffix = key[len(key)-4:]
-			} else {
-				keySuffix = key
-			}
-			b.logger.Warn("Failed to increment usage count in DB", "key_suffix", keySuffix, "error", err)
-		}
-	}(keyStr)
+	// Asynchronously update the usage count in the database by sending it to the queue.
+	select {
+	case b.updateQueue <- keyStr:
+		// Successfully queued
+	default:
+		// This case should be rare if the buffer is large enough and the worker is healthy.
+		b.logger.Error("Failed to queue usage count update: queue is full")
+	}
 
 	return keyStr
 }
@@ -143,8 +139,8 @@ func (b *Balancer) sortKeys() {
 	})
 }
 
-// keyUpdater periodically reloads the keys from the database.
-func (b *Balancer) keyUpdater() {
+// keyReloader periodically reloads the keys from the database.
+func (b *Balancer) keyReloader() {
 	// Wait for a minute before the first update
 	time.Sleep(1 * time.Minute)
 
@@ -156,16 +152,37 @@ func (b *Balancer) keyUpdater() {
 		case <-ticker.C:
 			b.updateKeys()
 		case <-b.stopChan:
-			b.logger.Info("Stopping key updater.")
+			b.logger.Info("Stopping key reloader.")
 			return
 		}
 	}
 }
 
+// usageUpdater is a worker that processes key usage updates from a channel.
+func (b *Balancer) usageUpdater() {
+	defer b.wg.Done()
+	b.logger.Info("Starting usage updater worker.")
+
+	for keyStr := range b.updateQueue {
+		err := b.db.IncrementGeminiKeyUsageCount(keyStr)
+		if err != nil {
+			// Use a safe suffix for logging to avoid exposing the full key.
+			keySuffix := ""
+			if len(keyStr) > 4 {
+				keySuffix = keyStr[len(keyStr)-4:]
+			} else {
+				keySuffix = keyStr
+			}
+			b.logger.Warn("Failed to increment usage count in DB", "key_suffix", keySuffix, "error", err)
+		}
+	}
+	b.logger.Info("Usage updater worker stopped.")
+}
+
 // updateKeys fetches the latest set of active keys from the database.
 func (b *Balancer) updateKeys() {
 	b.logger.Info("Updating Gemini API keys from database...")
-	keys, err := db.LoadActiveGeminiKeys(b.db)
+	keys, err := b.db.LoadActiveGeminiKeys()
 	if err != nil {
 		b.logger.Error("Failed to update Gemini keys from database", "error", err)
 		// Keep using the old set of keys if the update fails
@@ -202,5 +219,13 @@ func (b *Balancer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Close gracefully shuts down the balancer's background tasks.
 func (b *Balancer) Close() {
+	// Stop the periodic key reloader
 	close(b.stopChan)
+
+	// Close the update queue, which signals the usageUpdater to finish processing.
+	close(b.updateQueue)
+
+	// Wait for the usageUpdater to finish processing all items in the queue.
+	b.wg.Wait()
+	b.logger.Info("Balancer shutdown complete.")
 }

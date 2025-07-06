@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"gorm.io/gorm"
 )
 
 type OpenAIProxy struct {
@@ -25,7 +23,7 @@ type OpenAIProxy struct {
 	targetURL               *url.URL
 	debug                   bool
 	logger                  *slog.Logger
-	database                *gorm.DB
+	database                db.Service
 	stopChan                chan struct{}
 	disableThreshold        int
 	temporarilyDisabledKeys map[string]struct{}
@@ -37,8 +35,8 @@ type contextKey string
 const geminiKeyContextKey = contextKey("geminiKey")
 
 // newOpenAIProxyWithURL is the internal constructor that allows for custom target URLs, making it testable.
-func newOpenAIProxyWithURL(database *gorm.DB, target string, debug bool, logger *slog.Logger) (*OpenAIProxy, error) {
-	initialKeys, err := db.LoadActiveGeminiKeys(database)
+func newOpenAIProxyWithURL(dbService db.Service, target string, debug bool, logger *slog.Logger) (*OpenAIProxy, error) {
+	initialKeys, err := dbService.LoadActiveGeminiKeys()
 	if err != nil {
 		return nil, fmt.Errorf("failed to perform initial load of Gemini keys for proxy: %w", err)
 	}
@@ -56,7 +54,7 @@ func newOpenAIProxyWithURL(database *gorm.DB, target string, debug bool, logger 
 		targetURL:               targetURL,
 		debug:                   debug,
 		logger:                  logger.With("component", "proxy"),
-		database:                database,
+		database:                dbService,
 		stopChan:                make(chan struct{}),
 		disableThreshold:        3, // Disable after 3 consecutive failures
 		temporarilyDisabledKeys: make(map[string]struct{}),
@@ -109,8 +107,8 @@ func newOpenAIProxyWithURL(database *gorm.DB, target string, debug bool, logger 
 }
 
 // NewOpenAIProxy creates a new OpenAIProxy with the default Google API target.
-func NewOpenAIProxy(database *gorm.DB, debug bool, logger *slog.Logger) (*OpenAIProxy, error) {
-	return newOpenAIProxyWithURL(database, "https://generativelanguage.googleapis.com", debug, logger)
+func NewOpenAIProxy(dbService db.Service, debug bool, logger *slog.Logger) (*OpenAIProxy, error) {
+	return newOpenAIProxyWithURL(dbService, "https://generativelanguage.googleapis.com", debug, logger)
 }
 
 func (p *OpenAIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +147,7 @@ func (p *OpenAIProxy) keyUpdater() {
 // updateKeys fetches the latest set of active keys from the database.
 func (p *OpenAIProxy) updateKeys() {
 	p.logger.Info("Updating Gemini API keys for proxy from database...")
-	keys, err := db.LoadActiveGeminiKeys(p.database)
+	keys, err := p.database.LoadActiveGeminiKeys()
 	if err != nil {
 		p.logger.Error("Failed to update Gemini keys for proxy from database", "error", err)
 		// Keep using the old set of keys if the update fails
@@ -188,7 +186,7 @@ func (p *OpenAIProxy) modifyResponse(resp *http.Response) error {
 		p.logger.Warn("Gemini key returned 403 Forbidden", "key_suffix", safeKeySuffix(key))
 		// Run the database update in a goroutine to avoid blocking the response
 		go func(failedKey string) {
-			disabled, err := db.HandleGeminiKeyFailure(p.database, failedKey, p.disableThreshold)
+			disabled, err := p.database.HandleGeminiKeyFailure(failedKey, p.disableThreshold)
 			if err != nil {
 				p.logger.Error("Failed to handle Gemini key failure", "key_suffix", safeKeySuffix(failedKey), "error", err)
 				return
@@ -209,7 +207,7 @@ func (p *OpenAIProxy) modifyResponse(resp *http.Response) error {
 			p.tempDisableMutex.Unlock()
 
 			// Then, reset the failure count in the database.
-			if err := db.ResetGeminiKeyFailureCount(p.database, succeededKey); err != nil {
+			if err := p.database.ResetGeminiKeyFailureCount(succeededKey); err != nil {
 				// This is not a critical error, so we just log it.
 				p.logger.Warn("Failed to reset failure count for key", "key_suffix", safeKeySuffix(succeededKey), "error", err)
 			}
