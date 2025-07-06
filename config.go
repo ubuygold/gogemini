@@ -29,7 +29,7 @@ func loadConfig(path string) (*Config, error) {
 	}
 
 	if len(config.GeminiKeys) == 0 {
-		return nil, fmt.Errorf("no Gemini API keys found in config file")
+		return nil, fmt.Errorf("no gemini_keys found in config file")
 	}
 
 	if len(config.ClientKeys) == 0 {

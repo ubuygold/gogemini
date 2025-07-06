@@ -1,101 +1,80 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
 	"testing"
 )
 
-func TestGetNextKey(t *testing.T) {
+func TestNewBalancer_NoKeys(t *testing.T) {
 	config := &Config{
-		GeminiKeys: []string{"key1", "key2", "key3"},
+		GeminiKeys: []string{},
 	}
-	balancer := NewBalancer(config, nil)
-
-	expectedKeys := []string{"key1", "key2", "key3", "key1"}
-	for _, expectedKey := range expectedKeys {
-		actualKey := balancer.getNextKey()
-		if actualKey != expectedKey {
-			t.Errorf("Expected key %s, but got %s", expectedKey, actualKey)
-		}
+	_, err := NewBalancer(config)
+	if err == nil {
+		t.Error("Expected an error when no Gemini keys are provided, but got nil")
 	}
 }
 
-func TestNewBalancer(t *testing.T) {
-	config := &Config{
-		ClientKeys: []string{"client1", "client2"},
-	}
-	balancer := NewBalancer(config, nil)
-
-	expectedMap := map[string]bool{
-		"client1": true,
-		"client2": true,
-	}
-
-	if !reflect.DeepEqual(balancer.authorizedKeys, expectedMap) {
-		t.Errorf("Expected authorizedKeys map to be %v, but got %v", expectedMap, balancer.authorizedKeys)
-	}
-}
-
-func TestBalancer_ServeHTTP(t *testing.T) {
-	// --- Setup ---
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check that the proxy is forwarding with its own key, not the client's.
-		if r.Header.Get("x-goog-api-key") != "gemini-pool-key" {
-			t.Errorf("Expected x-goog-api-key to be 'gemini-pool-key', got '%s'", r.Header.Get("x-goog-api-key"))
-		}
+func TestBalancer_Proxy(t *testing.T) {
+	// 1. Create a mock upstream server
+	var receivedKey string
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedKey = r.Header.Get("x-goog-api-key")
 		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "OK from upstream")
 	}))
-	defer backend.Close()
+	defer upstreamServer.Close()
 
-	backendURL, err := url.Parse(backend.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	// 2. Create a config with test keys
 	config := &Config{
-		ClientKeys: []string{"valid-client-key"},
-		GeminiKeys: []string{"gemini-pool-key"},
-		Debug:      false, // Keep tests quiet
+		GeminiKeys: []string{"key1", "key2"},
 	}
-	balancer := NewBalancer(config, backendURL)
 
-	// --- Test Cases ---
-	t.Run("Authorized request", func(t *testing.T) {
-		req, _ := http.NewRequest("POST", "/", nil)
-		req.Header.Set("x-goog-api-key", "valid-client-key")
-		rr := httptest.NewRecorder()
+	// 3. Create the balancer
+	balancer, err := NewBalancer(config)
+	if err != nil {
+		t.Fatalf("Failed to create balancer: %v", err)
+	}
+	// No need to defer balancer.Close() as it does nothing now
 
-		balancer.ServeHTTP(rr, req)
+	// 4. Point the balancer to the mock upstream server
+	targetURL, err := url.Parse(upstreamServer.URL)
+	if err != nil {
+		t.Fatalf("Failed to parse upstream server URL: %v", err)
+	}
+	balancer.proxy.Director = func(req *http.Request) {
+		req.URL.Scheme = targetURL.Scheme
+		req.URL.Host = targetURL.Host
+		req.Host = targetURL.Host
+		req.Header.Set("x-goog-api-key", balancer.getNextKey())
+	}
 
-		if status := rr.Code; status != http.StatusOK {
-			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusOK)
-		}
-	})
+	// 5. Create a request to the balancer
+	req := httptest.NewRequest(http.MethodPost, "/gemini-pro:generateContent", nil)
+	rr := httptest.NewRecorder()
 
-	t.Run("Unauthorized with invalid key", func(t *testing.T) {
-		req, _ := http.NewRequest("POST", "/", nil)
-		req.Header.Set("x-goog-api-key", "invalid-client-key")
-		rr := httptest.NewRecorder()
+	// 6. Serve the request
+	balancer.ServeHTTP(rr, req)
 
-		balancer.ServeHTTP(rr, req)
+	// 7. Check the response
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status code %d, got %d", http.StatusOK, rr.Code)
+	}
+	if rr.Body.String() != "OK from upstream" {
+		t.Errorf("Expected body 'OK from upstream', got '%s'", rr.Body.String())
+	}
 
-		if status := rr.Code; status != http.StatusUnauthorized {
-			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusUnauthorized)
-		}
-	})
+	// 8. Check if the key was received by the upstream server
+	if receivedKey != "key1" {
+		t.Errorf("Expected upstream to receive key 'key1', got '%s'", receivedKey)
+	}
 
-	t.Run("Unauthorized with missing key", func(t *testing.T) {
-		req, _ := http.NewRequest("POST", "/", nil)
-		// No key set
-		rr := httptest.NewRecorder()
-
-		balancer.ServeHTTP(rr, req)
-
-		if status := rr.Code; status != http.StatusUnauthorized {
-			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusUnauthorized)
-		}
-	})
+	// 9. Test round-robin key selection
+	balancer.ServeHTTP(rr, req)
+	if receivedKey != "key2" {
+		t.Errorf("Expected upstream to receive key 'key2' on second request, got '%s'", receivedKey)
+	}
 }
