@@ -2,14 +2,16 @@ version: '3.8'
 
 services:
   gogemini:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "${GOGEMINI_PORT}:${GOGEMINI_PORT}"
     depends_on:
       - db
     environment:
-      - GOGEMINI_DATABASE_DSN=${GOGEMINI_DATABASE_DSN}
-      - GOGEMINI_DATABASE_TYPE=${GOGEMINI_DATABASE_TYPE}
+      - GOGEMINI_DATABASE_DSN=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:{POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+      - GOGEMINI_DATABASE_TYPE=postgres
       - GOGEMINI_PORT=${GOGEMINI_PORT}
       - GOGEMINI_ADMIN_PASSWORD=${GOGEMINI_ADMIN_PASSWORD}
       - GOGEMINI_DEBUG=${GOGEMINI_DEBUG}
@@ -23,8 +25,6 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "${POSTGRES_PORT}:5432"
     restart: unless-stopped
 
 volumes:

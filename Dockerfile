@@ -10,15 +10,8 @@ RUN go mod download
 # Copy the rest of the application source code
 COPY . .
 
-# Build the frontend
-WORKDIR /app/frontend
-RUN npm install -g bun
-RUN bun install
-RUN bun run build
-
-# Build the Go application
-WORKDIR /app
-RUN CGO_ENABLED=0 GOOS=linux go build -o /gogemini ./cmd/gogemini
+# Build the application using Makefile
+RUN make build
 
 # Stage 2: Create the final image
 FROM alpine:latest
@@ -26,13 +19,9 @@ FROM alpine:latest
 WORKDIR /app
 
 # Copy the built application from the builder stage
-COPY --from=builder /gogemini .
-
-# Copy the config file
-COPY config.yaml .
-
+COPY --from=builder /app/cmd/gogemini/gogemini .
 # Expose the port the application runs on
-EXPOSE 8081
+EXPOSE ${GOGEMINI_PORT}
 
 # Run the application
 CMD ["/app/gogemini"]
