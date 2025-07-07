@@ -252,6 +252,20 @@ func (p *OpenAIProxy) ModifyRequestBody(req *http.Request) error {
 		}
 	}
 
+	// 1. Unconditionally remove "top_k"
+	if _, ok := bodyJSON["top_k"]; ok {
+		delete(bodyJSON, "top_k")
+		modified = true
+	}
+
+	// 2. Remove any field that has a null value.
+	for key, value := range bodyJSON {
+		if value == nil {
+			delete(bodyJSON, key)
+			modified = true
+		}
+	}
+
 	// Also, remove "models/" prefix from the model name if it exists.
 	if model, ok := bodyJSON["model"].(string); ok {
 		if strings.HasPrefix(model, "models/") {

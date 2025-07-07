@@ -412,4 +412,29 @@ func TestModifyRequestBody(t *testing.T) {
 		bodyBytes, _ := io.ReadAll(req.Body)
 		assert.Equal(t, nonJsonBody, string(bodyBytes), "Non-JSON body should not be modified")
 	})
+
+	t.Run("removes top_k and null value fields", func(t *testing.T) {
+		originalBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9,
+			"top_k": 40,
+			"max_tokens": null
+		}`
+		expectedBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9
+		}`
+
+		req := httptest.NewRequest("POST", "/", strings.NewReader(originalBody))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+
+		assert.JSONEq(t, expectedBody, string(modifiedBodyBytes))
+		assert.Equal(t, int64(len(modifiedBodyBytes)), req.ContentLength, "ContentLength was not updated correctly")
+	})
 }
