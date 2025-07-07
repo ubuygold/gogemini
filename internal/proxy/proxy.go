@@ -252,6 +252,14 @@ func (p *OpenAIProxy) ModifyRequestBody(req *http.Request) error {
 		}
 	}
 
+	// Also, remove "models/" prefix from the model name if it exists.
+	if model, ok := bodyJSON["model"].(string); ok {
+		if strings.HasPrefix(model, "models/") {
+			bodyJSON["model"] = strings.TrimPrefix(model, "models/")
+			modified = true
+		}
+	}
+
 	if modified {
 		p.logger.Debug("Removed OpenAI-specific fields from request body", "fields", fieldsToRemove)
 		newBodyBytes, err := json.Marshal(bodyJSON)

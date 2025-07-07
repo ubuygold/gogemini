@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 )
 
 // Manager defines the interface for a key manager that the balancer can use.
@@ -59,6 +60,11 @@ func NewBalancer(km Manager, logger *slog.Logger) (*Balancer, error) {
 		req.Host = targetURL.Host
 
 		// The original path from the client request is already in req.URL.Path
+		// We need to remove the "models/" prefix from the model name in the path.
+		// e.g. /v1beta/models/gemini-pro:generateContent -> /v1beta/gemini-pro:generateContent
+		if strings.Contains(req.URL.Path, "/models/") {
+			req.URL.Path = strings.Replace(req.URL.Path, "/models/", "/", 1)
+		}
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {

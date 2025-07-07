@@ -137,3 +137,44 @@ func TestBalancer_ErrorHandler(t *testing.T) {
 		assert.Contains(t, rr.Body.String(), "Proxy Error")
 	})
 }
+
+func TestDirector_PathModification(t *testing.T) {
+	testLogger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	mockKM := new(MockKeyManager)
+	balancer, err := NewBalancer(mockKM, testLogger)
+	require.NoError(t, err)
+
+	testCases := []struct {
+		name         string
+		inputPath    string
+		expectedPath string
+	}{
+		{
+			name:         "with models prefix",
+			inputPath:    "/v1beta/models/gemini-pro:generateContent",
+			expectedPath: "/v1beta/gemini-pro:generateContent",
+		},
+		{
+			name:         "without models prefix",
+			inputPath:    "/v1beta/gemini-pro:generateContent",
+			expectedPath: "/v1beta/gemini-pro:generateContent",
+		},
+		{
+			name:         "irrelevant path",
+			inputPath:    "/v1beta/some/other/path",
+			expectedPath: "/v1beta/some/other/path",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.inputPath, nil)
+			ctx := context.WithValue(req.Context(), geminiKey, "test-key")
+			req = req.WithContext(ctx)
+
+			balancer.proxy.Director(req)
+
+			assert.Equal(t, tc.expectedPath, req.URL.Path)
+		})
+	}
+}

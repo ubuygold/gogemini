@@ -352,6 +352,27 @@ func TestModifyRequestBody(t *testing.T) {
 		assert.Equal(t, int64(len(modifiedBodyBytes)), req.ContentLength, "ContentLength was not updated correctly")
 	})
 
+	t.Run("removes models prefix from model name", func(t *testing.T) {
+		bodyWithPrefix := `{"model": "models/gemini-pro", "messages": [{"role": "user", "content": "hello"}]}`
+		expectedBody := `{"model": "gemini-pro", "messages": [{"role": "user", "content": "hello"}]}`
+		req := httptest.NewRequest("POST", "/", strings.NewReader(bodyWithPrefix))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+		assert.JSONEq(t, expectedBody, string(modifiedBodyBytes))
+	})
+
+	t.Run("does not modify model name without prefix", func(t *testing.T) {
+		bodyWithoutPrefix := `{"model": "gemini-pro", "messages": [{"role": "user", "content": "hello"}]}`
+		req := httptest.NewRequest("POST", "/", strings.NewReader(bodyWithoutPrefix))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+		assert.JSONEq(t, bodyWithoutPrefix, string(modifiedBodyBytes))
+	})
+
 	t.Run("does not modify clean body", func(t *testing.T) {
 		cleanBody := `{"model": "gemini-pro", "messages": [{"role": "user", "content": "hello"}]}`
 		req := httptest.NewRequest("POST", "/", strings.NewReader(cleanBody))
