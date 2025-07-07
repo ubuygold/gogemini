@@ -3,8 +3,9 @@ package db
 import (
 	"errors"
 	"fmt"
-	"gogemini/internal/config"
-	"gogemini/internal/model"
+
+	"github.com/ubuygold/gogemini/internal/config"
+	"github.com/ubuygold/gogemini/internal/model"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"

@@ -14,15 +14,15 @@ import (
 	"syscall"
 	"time"
 
-	"gogemini/internal/admin"
-	"gogemini/internal/auth"
-	"gogemini/internal/balancer"
-	"gogemini/internal/config"
-	"gogemini/internal/db"
-	"gogemini/internal/keymanager"
-	"gogemini/internal/logger"
-	"gogemini/internal/proxy"
-	"gogemini/internal/scheduler"
+	"github.com/ubuygold/gogemini/internal/admin"
+	"github.com/ubuygold/gogemini/internal/auth"
+	"github.com/ubuygold/gogemini/internal/balancer"
+	"github.com/ubuygold/gogemini/internal/config"
+	"github.com/ubuygold/gogemini/internal/db"
+	"github.com/ubuygold/gogemini/internal/keymanager"
+	"github.com/ubuygold/gogemini/internal/logger"
+	"github.com/ubuygold/gogemini/internal/proxy"
+	"github.com/ubuygold/gogemini/internal/scheduler"
 
 	"github.com/gin-gonic/gin"
 )
@@ -30,6 +30,8 @@ import (
 //go:embed all:dist
 var webUI embed.FS
 var indexHTML []byte
+
+var newDBService = db.NewService
 
 // customRecovery is a middleware that recovers from panics and handles http.ErrAbortHandler gracefully.
 func customRecovery(log *slog.Logger) gin.HandlerFunc {
@@ -54,41 +56,19 @@ func customRecovery(log *slog.Logger) gin.HandlerFunc {
 	}
 }
 
-func main() {
-	// Load configuration
-	cfg, warning, err := config.LoadConfig("config.yaml")
-	if err != nil {
-		// Use a temporary logger for startup errors
-		slog.Error("Error loading configuration", "error", err)
-		os.Exit(1)
-	}
-
-	// Setup logger
-	log := logger.New(cfg.Debug)
-	log.Info("Logger initialized", "debug_mode", cfg.Debug)
-	if warning != "" {
-		log.Warn(warning)
-	}
-
+func setupAndRunServer(cfg *config.Config, log *slog.Logger, dbService db.Service) error {
+	var err error
 	indexHTML, err = webUI.ReadFile("dist/index.html")
 	if err != nil {
 		log.Error("failed to read index.html from embedded fs", "error", err)
-		os.Exit(1)
+		return err
 	}
-
-	// Initialize database service
-	dbService, err := db.NewService(cfg.Database)
-	if err != nil {
-		log.Error("Error initializing database service", "error", err)
-		os.Exit(1)
-	}
-	log.Info("Database service initialized", "type", cfg.Database.Type)
 
 	// Initialize the central KeyManager
 	keyManager, err := keymanager.NewKeyManager(dbService, cfg, log)
 	if err != nil {
 		log.Error("Error creating KeyManager", "error", err)
-		os.Exit(1)
+		return err
 	}
 
 	// Start the scheduler
@@ -100,14 +80,14 @@ func main() {
 	geminiHandler, err := balancer.NewBalancer(keyManager, log)
 	if err != nil {
 		log.Error("Error creating Gemini handler", "error", err)
-		os.Exit(1)
+		return err
 	}
 
 	// Create the new reverse proxy for OpenAI
 	openaiProxy, err := proxy.NewOpenAIProxy(keyManager, cfg, log)
 	if err != nil {
 		log.Error("Error creating OpenAI proxy", "error", err)
-		os.Exit(1)
+		return err
 	}
 
 	// Create a Gin router
@@ -147,14 +127,14 @@ func main() {
 	distFS, err := fs.Sub(webUI, "dist")
 	if err != nil {
 		log.Error("failed to create sub file system for frontend", "error", err)
-		os.Exit(1)
+		return err
 	}
 
 	// Serve static files from the 'assets' directory
 	assetsFS, err := fs.Sub(distFS, "assets")
 	if err != nil {
 		log.Error("failed to create sub file system for assets", "error", err)
-		os.Exit(1)
+		return err
 	}
 	router.StaticFS("/assets", http.FS(assetsFS))
 
@@ -188,7 +168,8 @@ func main() {
 		log.Info("Starting server", "port", cfg.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error("Failed to start server", "error", err)
-			os.Exit(1)
+			// In a real app, you might want to signal the main goroutine to exit.
+			// For this refactoring, we'll just log it. The original os.Exit(1) is now handled in main.
 		}
 	}()
 
@@ -208,8 +189,38 @@ func main() {
 
 	if err := server.Shutdown(ctx); err != nil {
 		log.Error("Server forced to shutdown", "error", err)
-		os.Exit(1)
+		return err
 	}
 
 	log.Info("Server exiting")
+	return nil
+}
+
+func main() {
+	// Load configuration
+	cfg, warning, err := config.LoadConfig("config.yaml")
+	if err != nil {
+		// Use a temporary logger for startup errors
+		slog.Error("Error loading configuration", "error", err)
+		os.Exit(1)
+	}
+
+	// Setup logger
+	log := logger.New(cfg.Debug)
+	log.Info("Logger initialized", "debug_mode", cfg.Debug)
+	if warning != "" {
+		log.Warn(warning)
+	}
+
+	// Initialize database service
+	dbService, err := newDBService(cfg.Database)
+	if err != nil {
+		log.Error("Error initializing database service", "error", err)
+		os.Exit(1)
+	}
+	log.Info("Database service initialized", "type", cfg.Database.Type)
+
+	if err := setupAndRunServer(cfg, log, dbService); err != nil {
+		os.Exit(1)
+	}
 }

@@ -1,9 +1,10 @@
 package scheduler
 
 import (
-	"gogemini/internal/config"
-	"gogemini/internal/db"
 	"log"
+
+	"github.com/ubuygold/gogemini/internal/config"
+	"github.com/ubuygold/gogemini/internal/db"
 
 	"github.com/robfig/cron/v3"
 )

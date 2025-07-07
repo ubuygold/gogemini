@@ -2,11 +2,12 @@ package admin
 
 import (
 	"errors"
-	"gogemini/internal/db"
-	"gogemini/internal/keymanager"
-	"gogemini/internal/model"
 	"net/http"
 	"strconv"
+
+	"github.com/ubuygold/gogemini/internal/db"
+	"github.com/ubuygold/gogemini/internal/keymanager"
+	"github.com/ubuygold/gogemini/internal/model"
 
 	"github.com/gin-gonic/gin"
 )

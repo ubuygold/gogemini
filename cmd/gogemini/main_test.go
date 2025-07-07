@@ -5,26 +5,136 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
-	"gogemini/internal/admin"
-	"gogemini/internal/config"
-	"gogemini/internal/db"
-	"gogemini/internal/keymanager"
 	"os"
+
+	"github.com/ubuygold/gogemini/internal/admin"
+	"github.com/ubuygold/gogemini/internal/config"
+	"github.com/ubuygold/gogemini/internal/db"
+	"github.com/ubuygold/gogemini/internal/keymanager"
 
 	"github.com/gin-gonic/gin"
 
 	"encoding/json"
-	"gogemini/internal/auth"
-	"gogemini/internal/balancer"
-	"gogemini/internal/logger"
-	"gogemini/internal/model"
-	"gogemini/internal/proxy"
-	"gogemini/internal/scheduler"
+
+	"github.com/ubuygold/gogemini/internal/auth"
+	"github.com/ubuygold/gogemini/internal/balancer"
+	"github.com/ubuygold/gogemini/internal/logger"
+	"github.com/ubuygold/gogemini/internal/model"
+	"github.com/ubuygold/gogemini/internal/proxy"
+	"github.com/ubuygold/gogemini/internal/scheduler"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
+
+// MockDBService is a mock implementation of the db.Service interface.
+type MockDBService struct {
+	mock.Mock
+}
+
+func (m *MockDBService) LoadActiveGeminiKeys() ([]model.GeminiKey, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.GeminiKey), args.Error(1)
+}
+func (m *MockDBService) CreateGeminiKey(key *model.GeminiKey) error {
+	args := m.Called(key)
+	return args.Error(0)
+}
+func (m *MockDBService) BatchAddGeminiKeys(keys []string) error {
+	args := m.Called(keys)
+	return args.Error(0)
+}
+func (m *MockDBService) BatchDeleteGeminiKeys(ids []uint) error {
+	args := m.Called(ids)
+	return args.Error(0)
+}
+func (m *MockDBService) ListGeminiKeys(page, limit int, statusFilter string, minFailureCount int) ([]model.GeminiKey, int64, error) {
+	args := m.Called(page, limit, statusFilter, minFailureCount)
+	if args.Get(0) == nil {
+		return nil, int64(args.Int(1)), args.Error(2)
+	}
+	return args.Get(0).([]model.GeminiKey), int64(args.Int(1)), args.Error(2)
+}
+func (m *MockDBService) GetGeminiKey(id uint) (*model.GeminiKey, error) {
+	args := m.Called(id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.GeminiKey), args.Error(1)
+}
+func (m *MockDBService) UpdateGeminiKey(key *model.GeminiKey) error {
+	args := m.Called(key)
+	return args.Error(0)
+}
+func (m *MockDBService) DeleteGeminiKey(id uint) error {
+	args := m.Called(id)
+	return args.Error(0)
+}
+func (m *MockDBService) IncrementGeminiKeyUsageCount(key string) error {
+	args := m.Called(key)
+	return args.Error(0)
+}
+func (m *MockDBService) HandleGeminiKeyFailure(key string, threshold int) (bool, error) {
+	args := m.Called(key, threshold)
+	return args.Bool(0), args.Error(1)
+}
+func (m *MockDBService) ResetGeminiKeyFailureCount(key string) error {
+	args := m.Called(key)
+	return args.Error(0)
+}
+func (m *MockDBService) UpdateGeminiKeyStatus(key, status string) error {
+	args := m.Called(key, status)
+	return args.Error(0)
+}
+func (m *MockDBService) CreateAPIKey(key *model.APIKey) error {
+	args := m.Called(key)
+	return args.Error(0)
+}
+func (m *MockDBService) ListAPIKeys() ([]model.APIKey, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.APIKey), args.Error(1)
+}
+func (m *MockDBService) GetAPIKey(id uint) (*model.APIKey, error) {
+	args := m.Called(id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.APIKey), args.Error(1)
+}
+func (m *MockDBService) UpdateAPIKey(key *model.APIKey) error {
+	args := m.Called(key)
+	return args.Error(0)
+}
+func (m *MockDBService) DeleteAPIKey(id uint) error {
+	args := m.Called(id)
+	return args.Error(0)
+}
+func (m *MockDBService) IncrementAPIKeyUsageCount(key string) error {
+	args := m.Called(key)
+	return args.Error(0)
+}
+func (m *MockDBService) ResetAllAPIKeyUsage() error {
+	args := m.Called()
+	return args.Error(0)
+}
+func (m *MockDBService) FindAPIKeyByKey(key string) (*model.APIKey, error) {
+	args := m.Called(key)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.APIKey), args.Error(1)
+}
 
 func TestCustomRecovery_Panic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -173,7 +283,7 @@ port: 8082
 debug: false
 database:
   type: "sqlite"
-  dsn: "file:proxy_e2e?mode=memory&cache=shared"
+  dsn: "file:proxy_e2e?mode=memory&cache=shared&_pragma=busy_timeout(5000)"
 admin:
   password: "proxy-e2e-password"
 proxy:
@@ -291,6 +401,174 @@ proxy:
 			}
 			assert.Equal(t, expectedStatus, rr.Code)
 		})
+	}
+}
+
+func TestSetupAndRunServer_Failure(t *testing.T) {
+	// We can't easily test the full setupAndRunServer because it blocks on signal.
+	// But we can test the initial setup steps by manipulating the conditions.
+
+	t.Run("keymanager initialization failure", func(t *testing.T) {
+		cfg := &config.Config{} // A minimal config is fine
+		log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+		// Use a mock DB that returns an error on LoadActiveGeminiKeys
+		mockDB := new(MockDBService)
+		mockDB.On("LoadActiveGeminiKeys").Return(nil, assert.AnError).Once()
+
+		err := setupAndRunServer(cfg, log, mockDB)
+		assert.Error(t, err)
+		// The error from keymanager.New should be wrapped, so we check for the underlying error.
+		assert.ErrorIs(t, err, assert.AnError)
+
+		mockDB.AssertExpectations(t)
+	})
+
+	t.Run("gin logger is used in debug mode", func(t *testing.T) {
+		// This is tricky to assert directly without inspecting the router's middleware stack,
+		// which Gin doesn't expose publicly. We'll test it by checking the log output.
+		cfg := &config.Config{Debug: true, Port: 9999} // Use a different port
+		log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		mockDB := new(MockDBService)
+		mockDB.On("LoadActiveGeminiKeys").Return([]model.GeminiKey{}, nil)
+
+		// We need to run the server briefly and capture its output
+		var logBuf bytes.Buffer
+		gin.DefaultWriter = &logBuf
+
+		serverErrChan := make(chan error, 1)
+		go func() {
+			serverErrChan <- setupAndRunServer(cfg, log, mockDB)
+		}()
+
+		// Give the server a moment to start up
+		time.Sleep(100 * time.Millisecond)
+
+		// Send a request to trigger the logger
+		http.Get("http://localhost:9999/")
+
+		// Give it a moment to log
+		time.Sleep(100 * time.Millisecond)
+
+		// Send a shutdown signal
+		syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+
+		// Wait for the server to shut down
+		err := <-serverErrChan
+		assert.NoError(t, err)
+
+		// Check if the Gin logger output is present
+		assert.Contains(t, logBuf.String(), "[GIN]")
+		assert.Contains(t, logBuf.String(), "GET")
+		assert.Contains(t, logBuf.String(), "/")
+
+		gin.DefaultWriter = os.Stdout // Reset to default
+	})
+}
+
+func TestFrontendServing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+
+	// Mock reading index.html
+	indexHTML = []byte("<html><body>Mock Index</body></html>")
+
+	// This setup is simplified from setupAndRunServer, focusing only on frontend routes.
+	handler := func(c *gin.Context) {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
+	}
+	router.GET("/", handler)
+	router.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if !strings.HasPrefix(path, "/api") &&
+			!strings.HasPrefix(path, "/gemini") &&
+			!strings.HasPrefix(path, "/openai") {
+			handler(c)
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"code": "PAGE_NOT_FOUND", "message": "Page not found"})
+	})
+
+	t.Run("serves index.html for root", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, "/", nil)
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+
+		assert.Equal(t, http.StatusOK, resp.Code)
+		assert.Equal(t, "<html><body>Mock Index</body></html>", resp.Body.String())
+	})
+
+	t.Run("serves index.html for unknown path", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, "/some/unknown/path", nil)
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+
+		assert.Equal(t, http.StatusOK, resp.Code)
+		assert.Equal(t, "<html><body>Mock Index</body></html>", resp.Body.String())
+	})
+
+	t.Run("returns 404 for API-like unknown path", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, "/api/v1/unknown", nil)
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+
+		assert.Equal(t, http.StatusNotFound, resp.Code)
+		assert.JSONEq(t, `{"code": "PAGE_NOT_FOUND", "message": "Page not found"}`, resp.Body.String())
+	})
+}
+
+func TestGracefulShutdown(t *testing.T) {
+	// This test is a bit complex as it involves signals and goroutines.
+	// It's a good example of how to test main application lifecycle.
+
+	// Create a valid config file
+	const tempConfig = `
+port: 8088
+debug: false
+database:
+  type: "sqlite"
+  dsn: "file:graceful_shutdown?mode=memory&cache=shared&_pragma=busy_timeout(5000)"
+admin:
+  password: "shutdown-test"
+`
+	configPath := "config_shutdown_test.yaml"
+	err := os.WriteFile(configPath, []byte(tempConfig), 0644)
+	assert.NoError(t, err)
+	defer os.Remove(configPath)
+
+	cfg, _, err := config.LoadConfig(configPath)
+	assert.NoError(t, err)
+
+	log := logger.New(cfg.Debug)
+	dbService, err := db.NewService(cfg.Database)
+	assert.NoError(t, err)
+
+	// Run the server in a goroutine
+	serverExited := make(chan struct{})
+	go func() {
+		err := setupAndRunServer(cfg, log, dbService)
+		// We expect a "server closed" error on graceful shutdown, which is not a failure.
+		if err != nil && err != http.ErrServerClosed {
+			assert.NoError(t, err)
+		}
+		close(serverExited)
+	}()
+
+	// Give the server a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Send the interrupt signal
+	p, err := os.FindProcess(os.Getpid())
+	assert.NoError(t, err)
+	err = p.Signal(syscall.SIGINT)
+	assert.NoError(t, err)
+
+	// Wait for the server to exit gracefully
+	select {
+	case <-serverExited:
+		// Success
+	case <-time.After(6 * time.Second): // 5s timeout in main + 1s buffer
+		t.Fatal("server did not shut down gracefully within the timeout")
 	}
 }
 

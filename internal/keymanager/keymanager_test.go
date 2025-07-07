@@ -2,20 +2,38 @@ package keymanager
 
 import (
 	"errors"
-	"gogemini/internal/config"
-	"gogemini/internal/model"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ubuygold/gogemini/internal/config"
+	"github.com/ubuygold/gogemini/internal/model"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"gorm.io/gorm"
 )
 
 // MockDBService is a mock implementation of the db.Service interface.
 type MockDBService struct {
 	mock.Mock
+}
+
+// MockHTTPClient is a mock implementation of the HTTPClient interface.
+type MockHTTPClient struct {
+	mock.Mock
+}
+
+func (m *MockHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	args := m.Called(req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*http.Response), args.Error(1)
 }
 
 func (m *MockDBService) LoadActiveGeminiKeys() ([]model.GeminiKey, error) {
@@ -45,7 +63,13 @@ func (m *MockDBService) BatchDeleteGeminiKeys(ids []uint) error     { return nil
 func (m *MockDBService) ListGeminiKeys(page, limit int, statusFilter string, minFailureCount int) ([]model.GeminiKey, int64, error) {
 	return nil, 0, nil
 }
-func (m *MockDBService) GetGeminiKey(id uint) (*model.GeminiKey, error) { return nil, nil }
+func (m *MockDBService) GetGeminiKey(id uint) (*model.GeminiKey, error) {
+	args := m.Called(id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.GeminiKey), args.Error(1)
+}
 func (m *MockDBService) UpdateGeminiKey(key *model.GeminiKey) error {
 	args := m.Called(key)
 	return args.Error(0)
@@ -131,8 +155,8 @@ func TestGetNextKey(t *testing.T) {
 		assert.Equal(t, "key2", key)
 
 		// Verify that the usage count was incremented in memory and re-sorted
-		assert.Equal(t, int64(6), km.keys[0].UsageCount) // key2 is now at the front
-		assert.Equal(t, "key1", km.keys[1].Key)
+		assert.Equal(t, int64(6), km.keys[0].GetUsageCount()) // key2 is now at the front
+		assert.Equal(t, "key1", km.keys[1].GetKey())
 
 		// Drain the queue to allow shutdown
 		close(km.updateQueue)
@@ -176,7 +200,7 @@ func TestHandleKeyFailure(t *testing.T) {
 		km.HandleKeyFailure("key1")
 
 		// Check internal state
-		assert.Equal(t, 3, km.keys[0].FailureCount)
+		assert.Equal(t, 3, km.keys[0].GetFailureCount())
 		assert.True(t, km.keys[0].Disabled)
 		assert.NotNil(t, km.keys[0].DisabledAt)
 
@@ -201,7 +225,7 @@ func TestHandleKeyFailure(t *testing.T) {
 		// No DB call is expected
 		km.HandleKeyFailure("key1")
 
-		assert.Equal(t, 2, km.keys[0].FailureCount)
+		assert.Equal(t, 2, km.keys[0].GetFailureCount())
 		assert.False(t, km.keys[0].Disabled)
 		// We still expect a DB call to update the failure count
 		mockDB.On("UpdateGeminiKey", mock.MatchedBy(func(k *model.GeminiKey) bool {
@@ -241,7 +265,7 @@ func TestHandleKeySuccess(t *testing.T) {
 		km.HandleKeySuccess("key1")
 
 		// Check internal state
-		assert.Equal(t, 0, km.keys[0].FailureCount)
+		assert.Equal(t, 0, km.keys[0].GetFailureCount())
 		assert.False(t, km.keys[0].Disabled)
 
 		// Allow time for the async DB update to be called
@@ -264,7 +288,7 @@ func TestHandleKeySuccess(t *testing.T) {
 		// No DB call is expected
 		km.HandleKeySuccess("key1")
 
-		assert.Equal(t, 0, km.keys[0].FailureCount)
+		assert.Equal(t, 0, km.keys[0].GetFailureCount())
 		assert.False(t, km.keys[0].Disabled)
 		t.Run("returns error when all keys are disabled", func(t *testing.T) {
 			mockDB := new(MockDBService)
@@ -290,48 +314,49 @@ func TestHandleKeySuccess(t *testing.T) {
 
 func TestReviveDisabledKeys(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	cfg := &config.Config{}
 
 	t.Run("revives a valid key", func(t *testing.T) {
 		mockDB := new(MockDBService)
-		// This key will be revived by a real API call, so it needs to be a valid one.
-		// Note: This test requires network access and a valid Google API key.
-		// You should replace "your-real-valid-google-api-key" with a key for testing.
-		// For CI/CD, this might need to be handled via secrets.
-		validTestKey := os.Getenv("VALID_GEMINI_API_KEY")
-		if validTestKey == "" {
-			t.Skip("Skipping test: VALID_GEMINI_API_KEY environment variable not set.")
-		}
+		mockHTTP := new(MockHTTPClient)
+		validKey := "a-valid-key"
 
 		keys := []*managedKey{
 			{
-				GeminiKey:  model.GeminiKey{Key: validTestKey, Status: "disabled"},
+				GeminiKey:  model.GeminiKey{Key: validKey, Status: "disabled"},
 				Disabled:   true,
 				DisabledAt: time.Now().Add(-1 * time.Minute), // Disabled a minute ago
 			},
 		}
-		mockDB.On("LoadActiveGeminiKeys").Return(([]model.GeminiKey)(nil), nil).Once()
-		km, err := NewKeyManager(mockDB, cfg, logger)
-		assert.NoError(t, err)
-		km.keys = keys // Manually set the keys for the test
+		km := &KeyManager{
+			keys:          keys,
+			logger:        logger,
+			db:            mockDB,
+			httpClient:    mockHTTP,
+			updateQueue:   make(chan string, 10),
+			syncDBUpdates: true,
+		}
 
+		// Mock the HTTP call to succeed
+		mockHTTP.On("Do", mock.Anything).Return(&http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("OK"))}, nil).Once()
 		// Expect the key to be marked as active in the DB after successful test
 		mockDB.On("UpdateGeminiKey", mock.MatchedBy(func(k *model.GeminiKey) bool {
-			return k.Key == validTestKey && k.FailureCount == 0 && k.Status == "active"
+			return k.Key == validKey && k.FailureCount == 0 && k.Status == "active"
 		})).Return(nil).Once()
 
 		km.ReviveDisabledKeys()
 
 		// Check internal state
 		assert.False(t, km.keys[0].Disabled)
-		assert.Equal(t, 0, km.keys[0].FailureCount)
+		assert.Equal(t, 0, km.keys[0].GetFailureCount())
 
+		mockHTTP.AssertExpectations(t)
 		mockDB.AssertExpectations(t)
 	})
 
 	t.Run("does not revive an invalid key", func(t *testing.T) {
 		mockDB := new(MockDBService)
-		invalidKey := "AIzaSyDS-jJkLryClJOym8AfAJtkBUoKbC4AN_4"
+		mockHTTP := new(MockHTTPClient)
+		invalidKey := "an-invalid-key"
 		keys := []*managedKey{
 			{
 				GeminiKey:  model.GeminiKey{Key: invalidKey, Status: "disabled"},
@@ -339,17 +364,195 @@ func TestReviveDisabledKeys(t *testing.T) {
 				DisabledAt: time.Now().Add(-1 * time.Minute),
 			},
 		}
-		mockDB.On("LoadActiveGeminiKeys").Return(([]model.GeminiKey)(nil), nil).Once()
-		km, err := NewKeyManager(mockDB, cfg, logger)
-		assert.NoError(t, err)
-		km.keys = keys // Manually set the keys for the test
+		km := &KeyManager{
+			keys:          keys,
+			logger:        logger,
+			db:            mockDB,
+			httpClient:    mockHTTP,
+			updateQueue:   make(chan string, 10),
+			syncDBUpdates: true,
+		}
 
+		// Mock the HTTP call to fail
+		mockHTTP.On("Do", mock.Anything).Return(&http.Response{StatusCode: 400, Body: io.NopCloser(strings.NewReader("Bad Request"))}, nil).Once()
 		// We do NOT expect any DB calls because the key is invalid and should not be revived.
 		km.ReviveDisabledKeys()
 
 		// Check internal state - key should remain disabled
 		assert.True(t, km.keys[0].Disabled)
 
+		mockHTTP.AssertExpectations(t)
+		mockDB.AssertExpectations(t)
+	})
+}
+
+func TestKeyManager_Misc(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	mockDB := new(MockDBService)
+
+	keys := []*managedKey{
+		{GeminiKey: model.GeminiKey{Model: gorm.Model{ID: 1}, Key: "key1"}, Disabled: false},
+		{GeminiKey: model.GeminiKey{Model: gorm.Model{ID: 2}, Key: "key2"}, Disabled: true},
+		{GeminiKey: model.GeminiKey{Model: gorm.Model{ID: 3}, Key: "key3"}, Disabled: false},
+	}
+
+	km := &KeyManager{
+		keys:   keys,
+		logger: logger,
+		db:     mockDB,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+
+	t.Run("GetAvailableKeyCount", func(t *testing.T) {
+		assert.Equal(t, 2, km.GetAvailableKeyCount())
+	})
+
+	t.Run("findKeyByID", func(t *testing.T) {
+		foundKey, err := km.findKeyByID(2)
+		assert.NoError(t, err)
+		assert.Equal(t, "key2", foundKey.Key)
+
+		_, err = km.findKeyByID(99)
+		assert.Error(t, err)
+	})
+
+	t.Run("TestAllKeysAsync", func(t *testing.T) {
+		// This is hard to test without a more complex setup,
+		// but we can at least call it and ensure it doesn't panic.
+		// A more thorough test would involve mocks for the http client.
+		km.TestAllKeysAsync()
+	})
+}
+
+func TestUpdateKeys(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	mockDB := new(MockDBService)
+
+	km := &KeyManager{
+		keys:   []*managedKey{{GeminiKey: model.GeminiKey{Key: "initial-key"}}},
+		logger: logger,
+		db:     mockDB,
+	}
+
+	// Define the new set of keys to be returned by the mock DB
+	newKeys := []model.GeminiKey{
+		{Key: "new-key-1", UsageCount: 1},
+		{Key: "new-key-2", UsageCount: 2},
+	}
+	mockDB.On("LoadActiveGeminiKeys").Return(newKeys, nil).Once()
+
+	km.updateKeys()
+
+	// Verify that the keys in the manager have been updated
+	assert.Equal(t, 2, len(km.keys))
+	assert.Equal(t, "new-key-1", km.keys[0].Key)
+	assert.Equal(t, "new-key-2", km.keys[1].Key)
+
+	mockDB.AssertExpectations(t)
+}
+
+func TestTestKeyByID(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	t.Run("key found in memory, test fails", func(t *testing.T) {
+		mockDB := new(MockDBService)
+		mockHTTP := new(MockHTTPClient)
+		km := &KeyManager{
+			keys:             []*managedKey{{GeminiKey: model.GeminiKey{Model: gorm.Model{ID: 1}, Key: "in-memory-key"}}},
+			logger:           logger,
+			db:               mockDB,
+			httpClient:       mockHTTP,
+			disableThreshold: 1,
+			updateQueue:      make(chan string, 10),
+			syncDBUpdates:    true,
+		}
+
+		// Mock the HTTP call to fail
+		mockHTTP.On("Do", mock.Anything).Return(&http.Response{StatusCode: 400, Body: io.NopCloser(strings.NewReader("Bad Request"))}, nil).Once()
+		// Expect the DB to be updated with the failure
+		mockDB.On("UpdateGeminiKey", mock.MatchedBy(func(k *model.GeminiKey) bool {
+			return k.ID == 1 && k.Status == "disabled"
+		})).Return(nil).Once()
+
+		err := km.TestKeyByID(1)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "test request returned non-200 status: 400")
+
+		// No need for sleep, as we can now deterministically check mock calls
+		mockHTTP.AssertExpectations(t)
+		mockDB.AssertExpectations(t)
+	})
+
+	t.Run("key found in memory, test succeeds", func(t *testing.T) {
+		mockDB := new(MockDBService)
+		mockHTTP := new(MockHTTPClient)
+		km := &KeyManager{
+			keys:          []*managedKey{{GeminiKey: model.GeminiKey{Model: gorm.Model{ID: 1}, Key: "in-memory-key", Status: "disabled"}, Disabled: true}},
+			logger:        logger,
+			db:            mockDB,
+			httpClient:    mockHTTP,
+			updateQueue:   make(chan string, 10),
+			syncDBUpdates: true,
+		}
+
+		// Mock the HTTP call to succeed
+		mockHTTP.On("Do", mock.Anything).Return(&http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("OK"))}, nil).Once()
+		// Expect the DB to be updated with the success (re-activation)
+		mockDB.On("UpdateGeminiKey", mock.MatchedBy(func(k *model.GeminiKey) bool {
+			return k.ID == 1 && k.Status == "active"
+		})).Return(nil).Once()
+
+		err := km.TestKeyByID(1)
+		assert.NoError(t, err)
+
+		mockHTTP.AssertExpectations(t)
+		mockDB.AssertExpectations(t)
+	})
+
+	t.Run("key not in memory, fetched from DB, test fails", func(t *testing.T) {
+		mockDB := new(MockDBService)
+		mockHTTP := new(MockHTTPClient)
+		km := &KeyManager{
+			keys:             []*managedKey{},
+			logger:           logger,
+			db:               mockDB,
+			httpClient:       mockHTTP,
+			disableThreshold: 1,
+			updateQueue:      make(chan string, 10),
+			syncDBUpdates:    true,
+		}
+
+		dbKey := &model.GeminiKey{Model: gorm.Model{ID: 3}, Key: "db-key"}
+		mockDB.On("GetGeminiKey", uint(3)).Return(dbKey, nil).Once()
+		mockHTTP.On("Do", mock.Anything).Return(&http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader("Server Error"))}, nil).Once()
+		mockDB.On("UpdateGeminiKey", mock.Anything).Return(nil).Once()
+
+		err := km.TestKeyByID(3)
+		assert.Error(t, err)
+
+		mockHTTP.AssertExpectations(t)
+		mockDB.AssertExpectations(t)
+	})
+
+	t.Run("key not in memory, not in DB", func(t *testing.T) {
+		mockDB := new(MockDBService)
+		mockHTTP := new(MockHTTPClient)
+		km := &KeyManager{
+			keys:       []*managedKey{},
+			logger:     logger,
+			db:         mockDB,
+			httpClient: mockHTTP,
+		}
+
+		mockDB.On("GetGeminiKey", uint(99)).Return(nil, gorm.ErrRecordNotFound).Once()
+
+		err := km.TestKeyByID(99)
+		assert.Error(t, err)
+		assert.Equal(t, "failed to find key with ID 99 in DB: record not found", err.Error())
+
+		mockHTTP.AssertNotCalled(t, "Do", mock.Anything)
 		mockDB.AssertExpectations(t)
 	})
 }

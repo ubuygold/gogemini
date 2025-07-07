@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"gogemini/internal/config"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
+
+	"github.com/ubuygold/gogemini/internal/config"
 )
 
 // Manager defines the interface for a key manager that the proxy can use.
@@ -60,21 +61,26 @@ func (rt *retryingTransport) RoundTrip(req *http.Request) (*http.Response, error
 			return resp, nil
 		}
 
-		// It's a retryable error, so handle the failure.
-		rt.logger.Warn("Request failed, will retry", "status", resp.StatusCode, "key_suffix", safeKeySuffix(currentKey), "error", err)
+		// It's a retryable error (either transport error or HTTP status), so handle the failure.
+		if err != nil {
+			lastErr = err
+			rt.logger.Warn("Request failed with transport error, will retry", "key_suffix", safeKeySuffix(currentKey), "error", err)
+		} else {
+			lastErr = fmt.Errorf("received status code %d", resp.StatusCode)
+			rt.logger.Warn("Request failed with retryable status, will retry", "status", resp.StatusCode, "key_suffix", safeKeySuffix(currentKey))
+		}
 		rt.keyManager.HandleKeyFailure(currentKey)
-		lastErr = err // Store the last error
 
-		// If this was the last retry, don't fetch a new key.
+		// If this was the last retry, return the last known response/error, wrapping the error for context.
 		if i == numAttempts-1 {
-			return resp, err
+			return resp, fmt.Errorf("last attempt failed: %w", lastErr)
 		}
 
 		// Get the next key for the retry.
 		nextKey, keyErr := rt.keyManager.GetNextKey()
 		if keyErr != nil {
 			rt.logger.Error("Failed to get next key for retry", "error", keyErr)
-			return resp, err // Return the last response and error
+			return resp, lastErr // Return the last response and error
 		}
 
 		// Update the request with the new key for the next iteration.

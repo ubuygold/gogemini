@@ -1,10 +1,11 @@
 package auth
 
 import (
-	"gogemini/internal/db"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ubuygold/gogemini/internal/db"
 
 	"errors"
 

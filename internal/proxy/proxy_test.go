@@ -1,14 +1,16 @@
 package proxy
 
 import (
+	"context"
 	"errors"
-	"gogemini/internal/config"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"github.com/ubuygold/gogemini/internal/config"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -127,10 +129,9 @@ func TestOpenAIProxy_RetryLogic(t *testing.T) {
 		rr := httptest.NewRecorder()
 		proxy.ServeHTTP(rr, req)
 
-		// The error handler should return 503, but the test recorder will capture the last response from the upstream.
-		// In a real scenario, the client would see the 503 from the ErrorHandler.
-		// For this test, we check that the final attempt's status code is what the server sent.
-		assert.Equal(t, http.StatusForbidden, rr.Code)
+		// After all retries fail, the proxy's ErrorHandler should be called, which returns a 503.
+		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+		assert.Contains(t, rr.Body.String(), "Service unavailable after multiple retries")
 		assert.Equal(t, int32(2), requestCount, "Server should have been called twice")
 		mockKM.AssertExpectations(t)
 	})
@@ -202,8 +203,108 @@ func TestOpenAIProxy_RetryLogic(t *testing.T) {
 		rr := httptest.NewRecorder()
 		proxy.ServeHTTP(rr, req)
 
-		assert.Equal(t, http.StatusForbidden, rr.Code)
+		// After all retries fail, the proxy's ErrorHandler should be called, which returns a 503.
+		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+		assert.Contains(t, rr.Body.String(), "Service unavailable after multiple retries")
 		assert.Equal(t, int32(5), requestCount, "Server should have been called exactly 5 times")
 		mockKM.AssertExpectations(t)
 	})
+}
+
+func TestNewOpenAIProxyWithURL_Error(t *testing.T) {
+	mockKM := new(MockKeyManager)
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	testConfig := &config.Config{Debug: false}
+
+	// Invalid URL with a control character
+	_, err := newOpenAIProxyWithURL(mockKM, testConfig, "http://\x7f.invalid", testLogger)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid control character in URL")
+}
+
+func TestRetryingTransport_RoundTrip_ContextError(t *testing.T) {
+	mockKM := new(MockKeyManager)
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	transport := &retryingTransport{
+		keyManager: mockKM,
+		logger:     testLogger,
+		transport:  http.DefaultTransport,
+	}
+
+	// Create a request without the geminiKey in the context
+	req := httptest.NewRequest("GET", "/", nil)
+	_, err := transport.RoundTrip(req)
+
+	assert.Error(t, err)
+	assert.EqualError(t, err, "gemini key not found in request context for transport")
+}
+
+func TestRetryingTransport_GetNextKeyError(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		w.WriteHeader(http.StatusTooManyRequests) // Always fail to trigger retry
+	}))
+	defer server.Close()
+
+	mockKM := new(MockKeyManager)
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	testConfig := &config.Config{Debug: false}
+
+	mockKM.On("GetAvailableKeyCount").Return(2)
+	mockKM.On("GetNextKey").Return("key-1", nil).Once() // For ServeHTTP
+	// This error occurs when trying to get a key for the retry
+	mockKM.On("GetNextKey").Return("", errors.New("no more keys")).Once()
+	mockKM.On("HandleKeyFailure", "key-1").Once()
+
+	proxy, err := newOpenAIProxyWithURL(mockKM, testConfig, server.URL, testLogger)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	rr := httptest.NewRecorder()
+	proxy.ServeHTTP(rr, req)
+
+	// When GetNextKey fails, the loop terminates and the ErrorHandler is triggered.
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Service unavailable after multiple retries")
+	assert.Equal(t, int32(1), requestCount, "Server should have been called only once")
+	mockKM.AssertExpectations(t)
+}
+
+func TestErrorHandler_ContextCanceled(t *testing.T) {
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	testConfig := &config.Config{Debug: false}
+	mockKM := new(MockKeyManager)
+
+	// We need a fully initialized proxy to test the error handler
+	proxy, err := newOpenAIProxyWithURL(mockKM, testConfig, "http://dummy.url", testLogger)
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/", nil)
+
+	// The ErrorHandler should not write to the response writer for a canceled context
+	proxy.reverseProxy.ErrorHandler(rr, req, context.Canceled)
+	assert.Equal(t, http.StatusOK, rr.Code) // Default status, nothing written
+	assert.Equal(t, "", rr.Body.String())
+}
+
+func TestSafeKeySuffix(t *testing.T) {
+	assert.Equal(t, "6789", safeKeySuffix("123456789"))
+	assert.Equal(t, "key", safeKeySuffix("key"))
+	assert.Equal(t, "", safeKeySuffix(""))
+}
+
+// mockTransport is a mock for http.RoundTripper
+type mockTransport struct {
+	mock.Mock
+}
+
+func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	args := m.Called(req)
+	if res := args.Get(0); res != nil {
+		return res.(*http.Response), args.Error(1)
+	}
+	return nil, args.Error(1)
 }

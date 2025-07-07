@@ -1,10 +1,10 @@
 package admin
 
 import (
-	"gogemini/internal/auth"
-	"gogemini/internal/config"
-	"gogemini/internal/db"
-	"gogemini/internal/keymanager"
+	"github.com/ubuygold/gogemini/internal/auth"
+	"github.com/ubuygold/gogemini/internal/config"
+	"github.com/ubuygold/gogemini/internal/db"
+	"github.com/ubuygold/gogemini/internal/keymanager"
 
 	"github.com/gin-gonic/gin"
 )

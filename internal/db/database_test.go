@@ -1,9 +1,10 @@
 package db
 
 import (
-	"gogemini/internal/config"
-	"gogemini/internal/model"
 	"testing"
+
+	"github.com/ubuygold/gogemini/internal/config"
+	"github.com/ubuygold/gogemini/internal/model"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -32,10 +33,28 @@ func TestGeminiKeyCRUD(t *testing.T) {
 	assert.Equal(t, geminiKey.Key, fetchedKey.Key)
 
 	// List
-	keys, total, err := db.ListGeminiKeys(1, 10, "all", 0)
-	assert.NoError(t, err)
-	assert.Len(t, keys, 1)
-	assert.Equal(t, int64(1), total)
+	t.Run("ListGeminiKeys", func(t *testing.T) {
+		db.CreateGeminiKey(&model.GeminiKey{Key: "disabled-key", Status: "disabled", FailureCount: 5})
+		// Test no filters
+		keys, total, err := db.ListGeminiKeys(1, 10, "all", 0)
+		assert.NoError(t, err)
+		assert.Len(t, keys, 2)
+		assert.Equal(t, int64(2), total)
+
+		// Test status filter
+		keys, total, err = db.ListGeminiKeys(1, 10, "disabled", 0)
+		assert.NoError(t, err)
+		assert.Len(t, keys, 1)
+		assert.Equal(t, int64(1), total)
+		assert.Equal(t, "disabled-key", keys[0].Key)
+
+		// Test failure count filter
+		keys, total, err = db.ListGeminiKeys(1, 10, "all", 3)
+		assert.NoError(t, err)
+		assert.Len(t, keys, 1)
+		assert.Equal(t, int64(1), total)
+		assert.Equal(t, "disabled-key", keys[0].Key)
+	})
 
 	// Update
 	fetchedKey.Key = "updated-key"
@@ -128,6 +147,11 @@ func TestHandleGeminiKeyFailure(t *testing.T) {
 	assert.True(t, disabled)
 	fetchedKey, _ = db.GetGeminiKey(key.ID)
 	assert.Equal(t, "disabled", fetchedKey.Status)
+
+	// Test failure for a non-existent key
+	disabled, err = db.HandleGeminiKeyFailure("non-existent-key", 3)
+	assert.Error(t, err)
+	assert.False(t, disabled)
 }
 
 func TestResetGeminiKeyFailureCount(t *testing.T) {
@@ -165,6 +189,10 @@ func TestBatchAddDeleteGeminiKeys(t *testing.T) {
 	assert.Len(t, allKeys, 2)
 	assert.Equal(t, int64(2), total)
 
+	// Test adding empty slice
+	err = db.BatchAddGeminiKeys([]string{})
+	assert.NoError(t, err)
+
 	// Batch Delete
 	var idsToDelete []uint
 	for _, k := range allKeys {
@@ -175,6 +203,10 @@ func TestBatchAddDeleteGeminiKeys(t *testing.T) {
 	allKeys, total, _ = db.ListGeminiKeys(1, 10, "all", 0)
 	assert.Len(t, allKeys, 0)
 	assert.Equal(t, int64(0), total)
+
+	// Test deleting empty slice
+	err = db.BatchDeleteGeminiKeys([]uint{})
+	assert.NoError(t, err)
 }
 
 func TestIncrementAPIKeyUsageCount(t *testing.T) {
@@ -201,4 +233,83 @@ func TestResetAllAPIKeyUsage(t *testing.T) {
 	for _, k := range keys {
 		assert.Equal(t, 0, k.UsageCount)
 	}
+}
+
+func TestUpdateGeminiKeyStatus(t *testing.T) {
+	db := setupTestDB(t)
+	key := &model.GeminiKey{Key: "status-key", Status: "active"}
+	db.CreateGeminiKey(key)
+
+	err := db.UpdateGeminiKeyStatus("status-key", "disabled")
+	assert.NoError(t, err)
+
+	fetchedKey, _ := db.GetGeminiKey(key.ID)
+	assert.Equal(t, "disabled", fetchedKey.Status)
+}
+
+func TestFindAPIKeyByKey(t *testing.T) {
+	db := setupTestDB(t)
+	key := &model.APIKey{Key: "find-me"}
+	db.CreateAPIKey(key)
+
+	foundKey, err := db.FindAPIKeyByKey("find-me")
+	assert.NoError(t, err)
+	assert.Equal(t, key.ID, foundKey.ID)
+
+	_, err = db.FindAPIKeyByKey("not-found")
+	assert.Error(t, err)
+	assert.Equal(t, ErrAPIKeyNotFound, err)
+}
+
+func TestNewService_InvalidDSN(t *testing.T) {
+	_, err := NewService(config.DatabaseConfig{
+		Type: "sqlite",
+		DSN:  "/invalid/path/to/db",
+	})
+	assert.Error(t, err)
+}
+
+func TestUpdateGeminiKeyStatus_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+	err := db.UpdateGeminiKeyStatus("non-existent-key", "disabled")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "key not found for status update")
+}
+
+func TestGetAPIKey_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+	_, err := db.GetAPIKey(9999)
+	assert.Error(t, err)
+	assert.Equal(t, ErrAPIKeyNotFound, err)
+}
+
+func TestGetGeminiKey_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+	_, err := db.GetGeminiKey(9999)
+	assert.Error(t, err)
+	assert.Equal(t, ErrGeminiKeyNotFound, err)
+}
+
+func TestBatchAddGeminiKeys_Conflict(t *testing.T) {
+	db := setupTestDB(t)
+	keys := []string{"conflict-key", "conflict-key"}
+
+	err := db.BatchAddGeminiKeys(keys)
+	assert.NoError(t, err)
+
+	allKeys, total, _ := db.ListGeminiKeys(1, 10, "all", 0)
+	assert.Len(t, allKeys, 1)
+	assert.Equal(t, int64(1), total)
+	assert.Equal(t, "conflict-key", allKeys[0].Key)
+}
+
+func TestListGeminiKeys_EmptyFilter(t *testing.T) {
+	db := setupTestDB(t)
+	db.CreateGeminiKey(&model.GeminiKey{Key: "key-1", Status: "active"})
+	db.CreateGeminiKey(&model.GeminiKey{Key: "key-2", Status: "disabled"})
+
+	keys, total, err := db.ListGeminiKeys(1, 10, "", 0)
+	assert.NoError(t, err)
+	assert.Len(t, keys, 2)
+	assert.Equal(t, int64(2), total)
 }

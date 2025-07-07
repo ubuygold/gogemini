@@ -2,12 +2,13 @@ package auth
 
 import (
 	"errors"
-	"gogemini/internal/db"
-	"gogemini/internal/model"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/ubuygold/gogemini/internal/db"
+	"github.com/ubuygold/gogemini/internal/model"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"

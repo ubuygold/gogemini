@@ -1,11 +1,13 @@
 package scheduler
 
 import (
-	"gogemini/internal/config"
-	"gogemini/internal/db"
-	"gogemini/internal/model"
 	"testing"
 
+	"github.com/ubuygold/gogemini/internal/config"
+	"github.com/ubuygold/gogemini/internal/db"
+	"github.com/ubuygold/gogemini/internal/model"
+
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -84,6 +86,27 @@ func TestScheduler_RunKeyRevivalJob(t *testing.T) {
 	scheduler.runKeyRevivalJob()
 
 	mockKM.AssertExpectations(t)
+}
+
+func TestScheduler_StartStop(t *testing.T) {
+	mockDB := new(MockDBService)
+	mockKM := new(MockKeyManager)
+	testConfig := &config.Config{
+		Scheduler: config.SchedulerConfig{
+			KeyRevivalInterval: "@every 5m",
+		},
+	}
+	var dbService db.Service = mockDB
+	scheduler := NewScheduler(dbService, testConfig, mockKM)
+
+	scheduler.Start()
+	assert.NotNil(t, scheduler.c)
+	entries := scheduler.c.Entries()
+	assert.Len(t, entries, 3)
+
+	scheduler.Stop()
+	// After stopping, the context of the cron scheduler should be done.
+	<-scheduler.c.Stop().Done()
 }
 
 func TestScheduler_RunDailyHealthCheckJob(t *testing.T) {

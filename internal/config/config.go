@@ -39,7 +39,7 @@ type Config struct {
 }
 
 // LoadConfig reads and parses the configuration file. It returns the config and a potential warning message.
-func LoadConfig(path string) (*Config, string, error) {
+var LoadConfig = func(path string) (*Config, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to read config file: %w", err)
@@ -58,8 +58,29 @@ func LoadConfig(path string) (*Config, string, error) {
 		warning = "proxy.disable_key_threshold not set, using default value of 3"
 	}
 
+	// Override with environment variables if they exist
+	if dsn := os.Getenv("GOGEMINI_DATABASE_DSN"); dsn != "" {
+		config.Database.DSN = dsn
+	}
+	if dbType := os.Getenv("GOGEMINI_DATABASE_TYPE"); dbType != "" {
+		config.Database.Type = dbType
+	}
+	if port := os.Getenv("GOGEMINI_PORT"); port != "" {
+		// Ignoring potential error for simplicity in this context
+		if p, err := fmt.Sscanf(port, "%d", &config.Port); err == nil && p == 1 {
+			// Value was updated
+		}
+	}
+	if password := os.Getenv("GOGEMINI_ADMIN_PASSWORD"); password != "" {
+		config.Admin.Password = password
+	}
+	if debug := os.Getenv("GOGEMINI_DEBUG"); debug != "" {
+		config.Debug = (debug == "true")
+	}
+
+	// Final validation after overrides
 	if config.Database.Type == "" || config.Database.DSN == "" {
-		return nil, "", fmt.Errorf("database type and dsn must be configured")
+		return nil, "", fmt.Errorf("database type and dsn must be configured in config.yaml or via environment variables")
 	}
 
 	return &config, warning, nil

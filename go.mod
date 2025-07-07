@@ -1,4 +1,4 @@
-module gogemini
+module github.com/ubuygold/gogemini
 
 go 1.24.3
 

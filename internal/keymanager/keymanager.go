@@ -3,9 +3,6 @@ package keymanager
 import (
 	"context"
 	"fmt"
-	"gogemini/internal/config"
-	"gogemini/internal/db"
-	"gogemini/internal/model"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,7 +10,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ubuygold/gogemini/internal/config"
+	"github.com/ubuygold/gogemini/internal/db"
+	"github.com/ubuygold/gogemini/internal/model"
 )
+
+// HTTPClient defines the interface for making HTTP requests.
+// This allows for mocking in tests.
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
+}
 
 // Manager defines the interface for managing Gemini API keys.
 // This allows for mocking in tests and decouples the admin handler from the concrete implementation.
@@ -39,6 +46,21 @@ type managedKey struct {
 	DisabledAt time.Time
 }
 
+// GetKey returns the key string.
+func (mk *managedKey) GetKey() string {
+	return mk.Key
+}
+
+// GetUsageCount returns the usage count.
+func (mk *managedKey) GetUsageCount() int64 {
+	return mk.UsageCount
+}
+
+// GetFailureCount returns the failure count.
+func (mk *managedKey) GetFailureCount() int {
+	return mk.FailureCount
+}
+
 type KeyManager struct {
 	mutex            sync.Mutex
 	keys             []*managedKey
@@ -48,8 +70,9 @@ type KeyManager struct {
 	updateQueue      chan string
 	wg               sync.WaitGroup
 	disableThreshold int
-	httpClient       *http.Client
+	httpClient       HTTPClient
 	revivalInterval  time.Duration
+	syncDBUpdates    bool // For testing purposes
 }
 
 // NewKeyManager creates a new KeyManager.
@@ -236,11 +259,17 @@ func (km *KeyManager) HandleKeyFailure(key string) {
 			// Persist the updated failure count and status to the database in the background.
 			// We make a copy to avoid data races in the goroutine.
 			keyToUpdate := k.GeminiKey
-			go func() {
+			if km.syncDBUpdates {
 				if err := km.db.UpdateGeminiKey(&keyToUpdate); err != nil {
 					km.logger.Error("Failed to update key failure count in DB", "key_id", keyToUpdate.ID, "error", err)
 				}
-			}()
+			} else {
+				go func() {
+					if err := km.db.UpdateGeminiKey(&keyToUpdate); err != nil {
+						km.logger.Error("Failed to update key failure count in DB", "key_id", keyToUpdate.ID, "error", err)
+					}
+				}()
+			}
 			break
 		}
 	}
@@ -262,11 +291,17 @@ func (km *KeyManager) HandleKeySuccess(key string) {
 				// Persist the updated failure count and status to the database in the background.
 				// We make a copy to avoid data races in the goroutine.
 				keyToUpdate := k.GeminiKey
-				go func() {
+				if km.syncDBUpdates {
 					if err := km.db.UpdateGeminiKey(&keyToUpdate); err != nil {
 						km.logger.Error("Failed to update key success status in DB", "key_id", keyToUpdate.ID, "error", err)
 					}
-				}()
+				} else {
+					go func() {
+						if err := km.db.UpdateGeminiKey(&keyToUpdate); err != nil {
+							km.logger.Error("Failed to update key success status in DB", "key_id", keyToUpdate.ID, "error", err)
+						}
+					}()
+				}
 			}
 			break
 		}
@@ -422,31 +457,32 @@ func (km *KeyManager) findKeyByID(id uint) (*managedKey, error) {
 // This is a synchronous operation.
 func (km *KeyManager) TestKeyByID(id uint) error {
 	// First, try to find the key in the in-memory list for efficiency.
-	managedKey, err := km.findKeyByID(id)
-	var keyToTest string
-	if err == nil {
-		keyToTest = managedKey.Key
-	} else {
+	mKey, err := km.findKeyByID(id)
+	if err != nil {
 		// If not in memory (e.g., it's inactive), fetch from DB.
 		dbKey, dbErr := km.db.GetGeminiKey(id)
 		if dbErr != nil {
 			return fmt.Errorf("failed to find key with ID %d in DB: %w", id, dbErr)
 		}
-		keyToTest = dbKey.Key
+		// Create a managedKey and add it to the list so it can be handled.
+		mKey = &managedKey{GeminiKey: *dbKey}
+		km.mutex.Lock()
+		km.keys = append(km.keys, mKey)
+		km.mutex.Unlock()
 	}
 
 	km.logger.Info("Performing manual health check for key", "key_id", id)
-	err = km.testAPIKey(keyToTest)
+	err = km.testAPIKey(mKey.Key)
 	if err != nil {
 		km.logger.Warn("Manual health check failed for key", "key_id", id, "error", err)
 		// We can also trigger the failure handler to ensure its state is updated.
-		km.HandleKeyFailure(keyToTest)
+		km.HandleKeyFailure(mKey.Key)
 		return err
 	}
 
 	km.logger.Info("Manual health check succeeded for key", "key_id", id)
 	// On success, ensure the key is marked as active.
-	km.HandleKeySuccess(keyToTest)
+	km.HandleKeySuccess(mKey.Key)
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package balancer
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -85,6 +86,21 @@ func TestBalancer_ServeHTTP(t *testing.T) {
 		assert.Contains(t, rr.Body.String(), "Service Unavailable: No active API keys")
 		mockKM.AssertExpectations(t)
 	})
+
+	t.Run("director safeguard", func(t *testing.T) {
+		mockKM := new(MockKeyManager)
+		balancer, err := NewBalancer(mockKM, testLogger)
+		require.NoError(t, err)
+
+		// Create a request without the geminiKey in the context
+		req := httptest.NewRequest("GET", "/", nil)
+		// We expect an error log, but the function should not panic.
+		// In a real scenario, we'd capture the log output to verify.
+		// For this test, we're just ensuring it runs without crashing.
+		assert.NotPanics(t, func() {
+			balancer.proxy.Director(req)
+		})
+	})
 }
 
 func TestNewBalancer(t *testing.T) {
@@ -96,4 +112,28 @@ func TestNewBalancer(t *testing.T) {
 	assert.NotNil(t, balancer)
 	assert.NotNil(t, balancer.proxy)
 	assert.Equal(t, mockKM, balancer.keyManager)
+}
+
+func TestBalancer_ErrorHandler(t *testing.T) {
+	testLogger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	mockKM := new(MockKeyManager)
+	balancer, err := NewBalancer(mockKM, testLogger)
+	require.NoError(t, err)
+
+	t.Run("handles context canceled error", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+		rr := httptest.NewRecorder()
+		balancer.proxy.ErrorHandler(rr, req, context.Canceled)
+		// We expect no response to be written, just a log message.
+		assert.Equal(t, http.StatusOK, rr.Code) // Default recorder code is 200
+		assert.Equal(t, "", rr.Body.String())
+	})
+
+	t.Run("handles generic proxy error", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+		rr := httptest.NewRecorder()
+		balancer.proxy.ErrorHandler(rr, req, assert.AnError)
+		assert.Equal(t, http.StatusBadGateway, rr.Code)
+		assert.Contains(t, rr.Body.String(), "Proxy Error")
+	})
 }
