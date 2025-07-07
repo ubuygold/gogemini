@@ -2,13 +2,13 @@ package auth
 
 import (
 	"gogemini/internal/db"
-	"gogemini/internal/model"
 	"net/http"
 	"strings"
 	"time"
 
+	"errors"
+
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 func AuthMiddleware(dbService db.Service) gin.HandlerFunc {
@@ -33,11 +33,9 @@ func AuthMiddleware(dbService db.Service) gin.HandlerFunc {
 			return
 		}
 
-		var apiKey model.APIKey
-		// Use the raw GORM DB instance for the lookup
-		result := dbService.GetDB().Where("key = ?", token).First(&apiKey)
-		if result.Error != nil {
-			if result.Error == gorm.ErrRecordNotFound {
+		apiKey, err := dbService.FindAPIKeyByKey(token)
+		if err != nil {
+			if errors.Is(err, db.ErrAPIKeyNotFound) {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
 				return
 			}

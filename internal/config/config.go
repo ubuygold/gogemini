@@ -23,13 +23,19 @@ type AdminConfig struct {
 	Password string `yaml:"password"`
 }
 
+// SchedulerConfig holds configuration for the scheduler.
+type SchedulerConfig struct {
+	KeyRevivalInterval string `yaml:"key_revival_interval"`
+}
+
 // Config holds the configuration for the load balancer.
 type Config struct {
-	Database DatabaseConfig `yaml:"database"`
-	Proxy    ProxyConfig    `yaml:"proxy"`
-	Admin    AdminConfig    `yaml:"admin"`
-	Port     int            `yaml:"port"`
-	Debug    bool           `yaml:"debug"`
+	Database  DatabaseConfig  `yaml:"database"`
+	Proxy     ProxyConfig     `yaml:"proxy"`
+	Admin     AdminConfig     `yaml:"admin"`
+	Scheduler SchedulerConfig `yaml:"scheduler"`
+	Port      int             `yaml:"port"`
+	Debug     bool            `yaml:"debug"`
 }
 
 // LoadConfig reads and parses the configuration file. It returns the config and a potential warning message.

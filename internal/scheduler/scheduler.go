@@ -1,27 +1,32 @@
 package scheduler
 
 import (
-	"fmt"
 	"gogemini/internal/config"
 	"gogemini/internal/db"
 	"log"
-	"net/http"
-	"time"
 
 	"github.com/robfig/cron/v3"
 )
 
-type Scheduler struct {
-	db     db.Service
-	c      *cron.Cron
-	config *config.Config
+// Manager defines the interface for a key manager that the scheduler can use.
+type Manager interface {
+	ReviveDisabledKeys()
+	CheckAllKeysHealth()
 }
 
-func NewScheduler(db db.Service, cfg *config.Config) *Scheduler {
+type Scheduler struct {
+	db         db.Service
+	c          *cron.Cron
+	config     *config.Config
+	keyManager Manager
+}
+
+func NewScheduler(db db.Service, cfg *config.Config, keyManager Manager) *Scheduler {
 	return &Scheduler{
-		db:     db,
-		c:      cron.New(),
-		config: cfg,
+		db:         db,
+		c:          cron.New(),
+		config:     cfg,
+		keyManager: keyManager,
 	}
 }
 
@@ -32,10 +37,20 @@ func (s *Scheduler) Start() {
 		log.Fatalf("Error scheduling daily api key reset job: %v", err)
 	}
 
-	// Schedule hourly check of Gemini keys
-	_, err = s.c.AddFunc("@hourly", func() { s.checkAllGeminiKeys("https://generativelanguage.googleapis.com") })
+	// Schedule periodic check to revive disabled Gemini keys
+	revivalInterval := "@every 10m" // Default to every 10 minutes
+	if s.config.Scheduler.KeyRevivalInterval != "" {
+		revivalInterval = s.config.Scheduler.KeyRevivalInterval
+	}
+	_, err = s.c.AddFunc(revivalInterval, s.runKeyRevivalJob)
 	if err != nil {
-		log.Fatalf("Error scheduling hourly gemini key check job: %v", err)
+		log.Fatalf("Error scheduling gemini key revival job: %v", err)
+	}
+
+	// Schedule daily health check for all keys
+	_, err = s.c.AddFunc("@daily", s.runDailyHealthCheckJob)
+	if err != nil {
+		log.Fatalf("Error scheduling daily health check job: %v", err)
 	}
 
 	s.c.Start()
@@ -48,46 +63,14 @@ func (s *Scheduler) resetAPIKeyUsage() {
 	}
 }
 
-func (s *Scheduler) checkAllGeminiKeys(baseURL string) {
-	log.Println("Running hourly job: Checking all active Gemini keys for validity.")
-	keys, err := s.db.LoadActiveGeminiKeys()
-	if err != nil {
-		log.Printf("Error loading gemini keys for check: %v", err)
-		return
-	}
+func (s *Scheduler) runKeyRevivalJob() {
+	log.Println("Running scheduled job: Checking for disabled keys to revive.")
+	s.keyManager.ReviveDisabledKeys()
+}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	disableThreshold := s.config.Proxy.DisableKeyThreshold
-
-	for _, key := range keys {
-		url := fmt.Sprintf("%s/v1beta/models/gemini-pro?key=%s", baseURL, key.Key)
-		resp, err := client.Get(url)
-		if err != nil {
-			log.Printf("Error checking key %s: %v", key.Key, err)
-			continue
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode == http.StatusOK {
-			// Key is valid, reset its failure count if it has any
-			if key.FailureCount > 0 {
-				log.Printf("Key %s is valid again. Resetting failure count.", key.Key)
-				if err := s.db.ResetGeminiKeyFailureCount(key.Key); err != nil {
-					log.Printf("Error resetting failure count for key %s: %v", key.Key, err)
-				}
-			}
-		} else if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
-			// Key is invalid, increment its failure count
-			log.Printf("Key %s is invalid (status %d). Incrementing failure count.", key.Key, resp.StatusCode)
-			disabled, err := s.db.HandleGeminiKeyFailure(key.Key, disableThreshold)
-			if err != nil {
-				log.Printf("Error handling failure for key %s: %v", key.Key, err)
-			}
-			if disabled {
-				log.Printf("Key %s has been disabled after reaching failure threshold.", key.Key)
-			}
-		}
-	}
+func (s *Scheduler) runDailyHealthCheckJob() {
+	log.Println("Running daily job: Performing health check on all keys.")
+	s.keyManager.CheckAllKeysHealth()
 }
 
 func (s *Scheduler) Stop() {

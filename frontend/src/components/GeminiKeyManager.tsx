@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { ElMessage } from 'element-plus';
+import 'element-plus/dist/index.css';
 
 type GeminiKey = {
   ID: number;
@@ -108,6 +110,64 @@ function GeminiKeyManager({ password }: GeminiKeyManagerProps) {
     );
   };
 
+  const handleTestKey = async (id: number) => {
+    try {
+      const response = await fetch(`/admin/gemini-keys/${id}/test`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${btoa(`admin:${password}`)}`,
+        },
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to test key');
+      }
+      ElMessage.success(`Key ID ${id} test passed.`);
+      fetchKeys(currentPage); // Refresh to show updated status
+    } catch (error: any) {
+      ElMessage.error(`Key ID ${id} test failed: ${error.message}`);
+    }
+  };
+
+  const handleTestAllKeys = async () => {
+    try {
+      const response = await fetch('/admin/gemini-keys/test', {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${btoa(`admin:${password}`)}`,
+        },
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to start batch test');
+      }
+      ElMessage.info('Batch key test initiated in the background. Refresh later to see results.');
+    } catch (error: any) {
+      ElMessage.error(`Failed to start batch test: ${error.message}`);
+    }
+  };
+
+  const handleActivateKey = async (id: number) => {
+    try {
+      const response = await fetch(`/admin/gemini-keys/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Basic ${btoa(`admin:${password}`)}`,
+        },
+        body: JSON.stringify({ status: 'active' }),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to activate key');
+      }
+      ElMessage.success(`Key ID ${id} has been activated.`);
+      fetchKeys(currentPage); // Refresh the list
+    } catch (error: any) {
+      ElMessage.error(`Failed to activate key: ${error.message}`);
+    }
+  };
+
   return (
     <div className="p-4 bg-base-100">
       <div className="card bg-base-200 shadow-xl mb-4">
@@ -197,6 +257,9 @@ function GeminiKeyManager({ password }: GeminiKeyManagerProps) {
             >
               Delete Selected ({selectedKeys.length})
             </button>
+             <button onClick={handleTestAllKeys} className="btn btn-accent">
+              Test All Keys
+            </button>
             <button
               className="btn"
               onClick={() => {
@@ -241,6 +304,7 @@ function GeminiKeyManager({ password }: GeminiKeyManagerProps) {
                   <th>Status</th>
                   <th>Failure Count</th>
                   <th>Usage Count</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -271,6 +335,22 @@ function GeminiKeyManager({ password }: GeminiKeyManagerProps) {
                     </td>
                     <td>{key.FailureCount}</td>
                     <td>{key.UsageCount}</td>
+                    <td className="space-x-2">
+                      <button
+                        onClick={() => handleTestKey(key.ID)}
+                        className="btn btn-xs btn-outline btn-info"
+                      >
+                        Test
+                      </button>
+                      {key.Status === 'disabled' && (
+                        <button
+                          onClick={() => handleActivateKey(key.ID)}
+                          className="btn btn-xs btn-outline btn-success"
+                        >
+                          Activate
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

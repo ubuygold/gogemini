@@ -19,6 +19,7 @@ import (
 	"gogemini/internal/balancer"
 	"gogemini/internal/config"
 	"gogemini/internal/db"
+	"gogemini/internal/keymanager"
 	"gogemini/internal/logger"
 	"gogemini/internal/proxy"
 	"gogemini/internal/scheduler"
@@ -83,21 +84,27 @@ func main() {
 	}
 	log.Info("Database service initialized", "type", cfg.Database.Type)
 
+	// Initialize the central KeyManager
+	keyManager, err := keymanager.NewKeyManager(dbService, cfg, log)
+	if err != nil {
+		log.Error("Error creating KeyManager", "error", err)
+		os.Exit(1)
+	}
+
 	// Start the scheduler
-	// Start the scheduler
-	s := scheduler.NewScheduler(dbService, cfg)
+	s := scheduler.NewScheduler(dbService, cfg, keyManager)
 	s.Start()
 	log.Info("Scheduler started")
 
 	// Create the new SDK-based handler for Gemini
-	geminiHandler, err := balancer.NewBalancer(dbService, log)
+	geminiHandler, err := balancer.NewBalancer(keyManager, log)
 	if err != nil {
 		log.Error("Error creating Gemini handler", "error", err)
 		os.Exit(1)
 	}
 
 	// Create the new reverse proxy for OpenAI
-	openaiProxy, err := proxy.NewOpenAIProxy(dbService, cfg, log)
+	openaiProxy, err := proxy.NewOpenAIProxy(keyManager, cfg, log)
 	if err != nil {
 		log.Error("Error creating OpenAI proxy", "error", err)
 		os.Exit(1)
@@ -116,7 +123,7 @@ func main() {
 	}
 
 	// Setup admin routes
-	admin.SetupRoutes(router, dbService, cfg)
+	admin.SetupRoutes(router, dbService, keyManager, cfg)
 
 	// Create a group for Gemini routes
 	geminiHandlerFunc := func(c *gin.Context) {
@@ -196,7 +203,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// Close the handlers to stop their background tasks
-	geminiHandler.Close()
+	keyManager.Close()
 	openaiProxy.Close()
 
 	if err := server.Shutdown(ctx); err != nil {

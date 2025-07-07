@@ -4,12 +4,13 @@ import (
 	"gogemini/internal/auth"
 	"gogemini/internal/config"
 	"gogemini/internal/db"
+	"gogemini/internal/keymanager"
 
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRoutes(router *gin.Engine, dbService db.Service, cfg *config.Config) {
-	handler := NewHandler(dbService)
+func SetupRoutes(router *gin.Engine, dbService db.Service, km keymanager.Manager, cfg *config.Config) {
+	handler := NewHandler(dbService, km)
 
 	adminGroup := router.Group("/admin")
 	adminGroup.Use(auth.AdminAuthMiddleware(cfg.Admin.Password))
@@ -20,9 +21,11 @@ func SetupRoutes(router *gin.Engine, dbService db.Service, cfg *config.Config) {
 			geminiKeysGroup.POST("", handler.CreateGeminiKeyHandler)
 			geminiKeysGroup.POST("/batch", handler.BatchCreateGeminiKeysHandler)
 			geminiKeysGroup.DELETE("/batch", handler.BatchDeleteGeminiKeysHandler)
+			geminiKeysGroup.POST("/test", handler.TestAllGeminiKeysHandler) // Bulk test
 			geminiKeysGroup.GET("/:id", handler.GetGeminiKeyHandler)
 			geminiKeysGroup.PUT("/:id", handler.UpdateGeminiKeyHandler)
 			geminiKeysGroup.DELETE("/:id", handler.DeleteGeminiKeyHandler)
+			geminiKeysGroup.POST("/:id/test", handler.TestGeminiKeyHandler) // Single test
 		}
 
 		clientKeysGroup := adminGroup.Group("/client-keys")

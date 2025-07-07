@@ -10,6 +10,7 @@ import (
 	"gogemini/internal/admin"
 	"gogemini/internal/config"
 	"gogemini/internal/db"
+	"gogemini/internal/keymanager"
 	"os"
 
 	"github.com/gin-gonic/gin"
@@ -84,7 +85,7 @@ port: 8081
 debug: false
 database:
   type: "sqlite"
-  dsn: "file::memory:"
+  dsn: "file:admin_e2e?mode=memory&cache=shared"
 admin:
   password: "e2e-test-password"
 `
@@ -102,7 +103,9 @@ admin:
 	router := gin.New()
 	dbService, err := db.NewService(cfg.Database)
 	assert.NoError(t, err)
-	admin.SetupRoutes(router, dbService, cfg)
+	// For this test, we don't need a real key manager, so we can use a mock.
+	mockKM := &mockKeyManager{}
+	admin.SetupRoutes(router, dbService, mockKM, cfg)
 
 	// --- Test Cases ---
 
@@ -170,7 +173,7 @@ port: 8082
 debug: false
 database:
   type: "sqlite"
-  dsn: "file::memory:"
+  dsn: "file:proxy_e2e?mode=memory&cache=shared"
 admin:
   password: "proxy-e2e-password"
 proxy:
@@ -195,15 +198,20 @@ proxy:
 	assert.NoError(t, err)
 
 	// Setup all routes
-	admin.SetupRoutes(router, dbService, cfg)
+	// We use the real keyManager for the proxy/balancer tests, but the admin routes can use a mock.
+	keyManager, err := keymanager.NewKeyManager(dbService, cfg, log)
+	assert.NoError(t, err)
+	admin.SetupRoutes(router, dbService, keyManager, cfg)
+	assert.NoError(t, err)
+	defer keyManager.Close()
 
-	geminiHandler, err := balancer.NewBalancer(dbService, log)
+	geminiHandler, err := balancer.NewBalancer(keyManager, log)
 	assert.NoError(t, err)
-	defer geminiHandler.Close()
-	openaiProxy, err := proxy.NewOpenAIProxy(dbService, cfg, log)
+	// No need to close geminiHandler, as its lifecycle is tied to the keyManager
+	openaiProxy, err := proxy.NewOpenAIProxy(keyManager, cfg, log)
 	assert.NoError(t, err)
-	defer openaiProxy.Close()
-	s := scheduler.NewScheduler(dbService, cfg)
+	// No need to close openaiProxy
+	s := scheduler.NewScheduler(dbService, cfg, keyManager)
 	s.Start() // Start scheduler for key checks
 	defer s.Stop()
 
@@ -285,3 +293,16 @@ proxy:
 		})
 	}
 }
+
+// mockKeyManager is a simple mock for tests that don't need key manager functionality.
+type mockKeyManager struct{}
+
+func (m *mockKeyManager) GetNextKey() (string, error) { return "", nil }
+func (m *mockKeyManager) HandleKeyFailure(key string) {}
+func (m *mockKeyManager) HandleKeySuccess(key string) {}
+func (m *mockKeyManager) ReviveDisabledKeys()         {}
+func (m *mockKeyManager) CheckAllKeysHealth()         {}
+func (m *mockKeyManager) GetAvailableKeyCount() int   { return 0 }
+func (m *mockKeyManager) TestKeyByID(id uint) error   { return nil }
+func (m *mockKeyManager) TestAllKeysAsync()           {}
+func (m *mockKeyManager) Close()                      {}

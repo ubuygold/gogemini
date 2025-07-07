@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"fmt"
 	"gogemini/internal/config"
 	"gogemini/internal/model"
@@ -11,6 +12,9 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+var ErrAPIKeyNotFound = errors.New("api key not found")
+var ErrGeminiKeyNotFound = errors.New("gemini key not found")
 
 // Service defines the interface for database operations.
 type Service interface {
@@ -26,6 +30,7 @@ type Service interface {
 	HandleGeminiKeyFailure(key string, disableThreshold int) (bool, error)
 	ResetGeminiKeyFailureCount(key string) error
 	IncrementGeminiKeyUsageCount(key string) error
+	UpdateGeminiKeyStatus(key, status string) error
 
 	// Client API Key Management
 	CreateAPIKey(key *model.APIKey) error
@@ -35,8 +40,7 @@ type Service interface {
 	DeleteAPIKey(id uint) error
 	IncrementAPIKeyUsageCount(key string) error
 	ResetAllAPIKeyUsage() error
-
-	GetDB() *gorm.DB
+	FindAPIKeyByKey(key string) (*model.APIKey, error)
 }
 
 // gormService is an implementation of the Service interface that uses GORM.
@@ -70,12 +74,6 @@ func NewService(cfg config.DatabaseConfig) (Service, error) {
 	}
 
 	return &gormService{db: db}, nil
-}
-
-// GetDB returns the underlying GORM DB instance.
-// This is useful for components that need direct DB access, like the scheduler.
-func (s *gormService) GetDB() *gorm.DB {
-	return s.db
 }
 
 // LoadActiveGeminiKeys retrieves all active Gemini keys from the database.
@@ -133,6 +131,18 @@ func (s *gormService) IncrementGeminiKeyUsageCount(key string) error {
 	result := s.db.Model(&model.GeminiKey{}).Where("key = ?", key).UpdateColumn("usage_count", gorm.Expr("usage_count + 1"))
 	if result.Error != nil {
 		return fmt.Errorf("failed to increment usage count for key %s: %w", key, result.Error)
+	}
+	return nil
+}
+
+// UpdateGeminiKeyStatus updates the status of a specific Gemini key.
+func (s *gormService) UpdateGeminiKeyStatus(key, status string) error {
+	result := s.db.Model(&model.GeminiKey{}).Where("key = ?", key).Update("status", status)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update status for key %s: %w", key, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("key not found for status update: %s", key)
 	}
 	return nil
 }
@@ -213,6 +223,9 @@ func (s *gormService) GetGeminiKey(id uint) (*model.GeminiKey, error) {
 	var key model.GeminiKey
 	result := s.db.First(&key, id)
 	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrGeminiKeyNotFound
+		}
 		return nil, fmt.Errorf("failed to get gemini key %d: %w", id, result.Error)
 	}
 	return &key, nil
@@ -255,6 +268,9 @@ func (s *gormService) GetAPIKey(id uint) (*model.APIKey, error) {
 	var key model.APIKey
 	result := s.db.First(&key, id)
 	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrAPIKeyNotFound
+		}
 		return nil, fmt.Errorf("failed to get api key %d: %w", id, result.Error)
 	}
 	return &key, nil
@@ -292,4 +308,17 @@ func (s *gormService) ResetAllAPIKeyUsage() error {
 		return fmt.Errorf("failed to reset all api key usage: %w", result.Error)
 	}
 	return nil
+}
+
+// FindAPIKeyByKey finds an API key by its key string.
+func (s *gormService) FindAPIKeyByKey(key string) (*model.APIKey, error) {
+	var apiKey model.APIKey
+	result := s.db.Where("key = ?", key).First(&apiKey)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrAPIKeyNotFound
+		}
+		return nil, fmt.Errorf("failed to find api key: %w", result.Error)
+	}
+	return &apiKey, nil
 }

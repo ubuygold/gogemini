@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"gogemini/internal/db"
 	"gogemini/internal/model"
 	"net/http"
@@ -19,10 +20,15 @@ type mockAuthDBService struct {
 	db *gorm.DB
 }
 
-func (m *mockAuthDBService) GetDB() *gorm.DB { return m.db }
-func (m *mockAuthDBService) IncrementAPIKeyUsageCount(key string) error {
-	// No-op for this test, as we only care about the auth logic, not usage counting.
-	return nil
+func (m *mockAuthDBService) FindAPIKeyByKey(key string) (*model.APIKey, error) {
+	var apiKey model.APIKey
+	if err := m.db.Where("key = ?", key).First(&apiKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, db.ErrAPIKeyNotFound
+		}
+		return nil, err
+	}
+	return &apiKey, nil
 }
 
 // --- Dummy implementations for the rest of the db.Service interface ---
@@ -39,16 +45,16 @@ func (m *mockAuthDBService) LoadActiveGeminiKeys() ([]model.GeminiKey, error) { 
 func (m *mockAuthDBService) HandleGeminiKeyFailure(key string, disableThreshold int) (bool, error) {
 	return false, nil
 }
-func (m *mockAuthDBService) ResetGeminiKeyFailureCount(key string) error { return nil }
-func (m *mockAuthDBService) IncrementGeminiKeyUsageCount(key string) error {
-	return nil
-}
-func (m *mockAuthDBService) CreateAPIKey(key *model.APIKey) error     { return nil }
-func (m *mockAuthDBService) ListAPIKeys() ([]model.APIKey, error)     { return nil, nil }
-func (m *mockAuthDBService) GetAPIKey(id uint) (*model.APIKey, error) { return nil, nil }
-func (m *mockAuthDBService) UpdateAPIKey(key *model.APIKey) error     { return nil }
-func (m *mockAuthDBService) DeleteAPIKey(id uint) error               { return nil }
-func (m *mockAuthDBService) ResetAllAPIKeyUsage() error               { return nil }
+func (m *mockAuthDBService) ResetGeminiKeyFailureCount(key string) error    { return nil }
+func (m *mockAuthDBService) IncrementGeminiKeyUsageCount(key string) error  { return nil }
+func (m *mockAuthDBService) UpdateGeminiKeyStatus(key, status string) error { return nil }
+func (m *mockAuthDBService) CreateAPIKey(key *model.APIKey) error           { return nil }
+func (m *mockAuthDBService) ListAPIKeys() ([]model.APIKey, error)           { return nil, nil }
+func (m_ *mockAuthDBService) GetAPIKey(id uint) (*model.APIKey, error)      { return nil, nil }
+func (m *mockAuthDBService) UpdateAPIKey(key *model.APIKey) error           { return nil }
+func (m *mockAuthDBService) DeleteAPIKey(id uint) error                     { return nil }
+func (m *mockAuthDBService) IncrementAPIKeyUsageCount(key string) error     { return nil }
+func (m *mockAuthDBService) ResetAllAPIKeyUsage() error                     { return nil }
 
 // Ensure mockAuthDBService implements the interface
 var _ db.Service = (*mockAuthDBService)(nil)
