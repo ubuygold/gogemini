@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"embed"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +25,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+//go:embed all:dist
+var webUI embed.FS
+var indexHTML []byte
 
 // customRecovery is a middleware that recovers from panics and handles http.ErrAbortHandler gracefully.
 func customRecovery(log *slog.Logger) gin.HandlerFunc {
@@ -62,6 +69,12 @@ func main() {
 		log.Warn(warning)
 	}
 
+	indexHTML, err = webUI.ReadFile("dist/index.html")
+	if err != nil {
+		log.Error("failed to read index.html from embedded fs", "error", err)
+		os.Exit(1)
+	}
+
 	// Initialize database service
 	dbService, err := db.NewService(cfg.Database)
 	if err != nil {
@@ -92,6 +105,7 @@ func main() {
 
 	// Create a Gin router
 	router := gin.New()
+	router.RedirectTrailingSlash = false
 	// Use our custom recovery middleware instead of the default one.
 	router.Use(customRecovery(log))
 
@@ -121,6 +135,40 @@ func main() {
 	openaiGroup.Use(auth.AuthMiddleware(dbService))
 	openaiGroup.GET("/*path", openaiHandlerFunc)
 	openaiGroup.POST("/*path", openaiHandlerFunc)
+
+	// Serve frontend
+	distFS, err := fs.Sub(webUI, "dist")
+	if err != nil {
+		log.Error("failed to create sub file system for frontend", "error", err)
+		os.Exit(1)
+	}
+
+	// Serve static files from the 'assets' directory
+	assetsFS, err := fs.Sub(distFS, "assets")
+	if err != nil {
+		log.Error("failed to create sub file system for assets", "error", err)
+		os.Exit(1)
+	}
+	router.StaticFS("/assets", http.FS(assetsFS))
+
+	// Serve other static files from the root of dist
+	router.StaticFileFS("/vite.svg", "vite.svg", http.FS(distFS))
+
+	// Serve index.html for the root path and any other non-API routes
+	handler := func(c *gin.Context) {
+		c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
+	}
+	router.GET("/", handler)
+	router.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if !strings.HasPrefix(path, "/api") &&
+			!strings.HasPrefix(path, "/gemini") &&
+			!strings.HasPrefix(path, "/openai") {
+			handler(c)
+			return
+		}
+		c.JSON(http.StatusNotFound, gin.H{"code": "PAGE_NOT_FOUND", "message": "Page not found"})
+	})
 
 	// Create and start the main server
 	server := &http.Server{
