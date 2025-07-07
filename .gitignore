@@ -24,3 +24,4 @@ OpenCode.md
 gemini.db
 cmd/gogemini/gogemini
 cmd/gogemini/dist
+.env

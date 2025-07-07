@@ -1,6 +1,8 @@
 # Stage 1: Build the Go application
 FROM golang:1.24-alpine AS builder
 
+RUN apk add --no-cache make
+
 WORKDIR /app
 
 # Copy go.mod and go.sum files to download dependencies
