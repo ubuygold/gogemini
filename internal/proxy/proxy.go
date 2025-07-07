@@ -1,9 +1,12 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -144,6 +147,12 @@ func newOpenAIProxyWithURL(km Manager, cfg *config.Config, target string, logger
 			key := req.Context().Value(geminiKeyContextKey).(string)
 			req.Header.Set("Authorization", "Bearer "+key)
 
+			// Sanitize the request body to remove OpenAI-specific fields.
+			if err := proxy.ModifyRequestBody(req); err != nil {
+				proxy.logger.Error("Failed to modify request body", "error", err)
+				// We can't easily fail the request here, but logging is important.
+			}
+
 			if proxy.debug {
 				proxy.logger.Debug("Proxying request", "path", req.URL.Path)
 			}
@@ -187,7 +196,6 @@ func (p *OpenAIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.reverseProxy.ServeHTTP(w, req)
 }
 
-// modifyResponse is called after the response from the target is received.
 // safeKeySuffix returns the last 4 characters of a key for logging.
 func safeKeySuffix(key string) string {
 	if len(key) > 4 {
@@ -199,4 +207,60 @@ func safeKeySuffix(key string) string {
 // Close is a no-op because the KeyManager's lifecycle is managed centrally.
 func (p *OpenAIProxy) Close() {
 	p.logger.Info("Proxy shutdown.")
+}
+
+// ModifyRequestBody reads the request body, removes OpenAI-specific fields,
+// and replaces the request body with the modified version.
+func (p *OpenAIProxy) ModifyRequestBody(req *http.Request) error {
+	if req.Body == nil {
+		return nil
+	}
+
+	bodyBytes, err := io.ReadAll(req.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read request body: %w", err)
+	}
+	// Restore the body so it can be read again if needed
+	req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	if len(bodyBytes) == 0 {
+		return nil
+	}
+
+	var bodyJSON map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &bodyJSON); err != nil {
+		// If it's not valid JSON, we don't touch it.
+		p.logger.Debug("Request body is not valid JSON, skipping modification", "error", err)
+		return nil
+	}
+
+	// List of OpenAI-specific fields to remove.
+	// Sourced from OpenAI API documentation and common client libraries.
+	fieldsToRemove := []string{
+		"frequency_penalty",
+		"presence_penalty",
+		"logit_bias",
+		"logprobs",
+		"top_logprobs",
+	}
+
+	modified := false
+	for _, field := range fieldsToRemove {
+		if _, ok := bodyJSON[field]; ok {
+			delete(bodyJSON, field)
+			modified = true
+		}
+	}
+
+	if modified {
+		p.logger.Debug("Removed OpenAI-specific fields from request body", "fields", fieldsToRemove)
+		newBodyBytes, err := json.Marshal(bodyJSON)
+		if err != nil {
+			return fmt.Errorf("failed to marshal modified request body: %w", err)
+		}
+		req.Body = io.NopCloser(bytes.NewBuffer(newBodyBytes))
+		req.ContentLength = int64(len(newBodyBytes))
+	}
+
+	return nil
 }

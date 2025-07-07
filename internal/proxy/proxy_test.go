@@ -2,11 +2,13 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -307,4 +309,86 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return res.(*http.Response), args.Error(1)
 	}
 	return nil, args.Error(1)
+}
+
+func TestModifyRequestBody(t *testing.T) {
+	testLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	proxy := &OpenAIProxy{logger: testLogger}
+
+	t.Run("removes unsupported fields", func(t *testing.T) {
+		// Original body with unsupported fields
+		originalBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "hello"}],
+			"temperature": 0.5,
+			"frequency_penalty": 0.7,
+			"presence_penalty": 0.8,
+			"logit_bias": {"123": 100},
+			"logprobs": true,
+			"top_logprobs": 5
+		}`
+		// Expected body after modification
+		expectedBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "hello"}],
+			"temperature": 0.5
+		}`
+
+		req := httptest.NewRequest("POST", "/", strings.NewReader(originalBody))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+
+		// Unmarshal both to compare them structurally, ignoring formatting differences
+		var originalMap, expectedMap, modifiedMap map[string]interface{}
+		require.NoError(t, json.Unmarshal([]byte(originalBody), &originalMap))
+		require.NoError(t, json.Unmarshal([]byte(expectedBody), &expectedMap))
+		require.NoError(t, json.Unmarshal(modifiedBodyBytes, &modifiedMap))
+
+		assert.NotEqual(t, originalMap, modifiedMap, "Original and modified map should not be equal")
+		assert.Equal(t, expectedMap, modifiedMap, "Modified body does not match expected body")
+		assert.Equal(t, int64(len(modifiedBodyBytes)), req.ContentLength, "ContentLength was not updated correctly")
+	})
+
+	t.Run("does not modify clean body", func(t *testing.T) {
+		cleanBody := `{"model": "gemini-pro", "messages": [{"role": "user", "content": "hello"}]}`
+		req := httptest.NewRequest("POST", "/", strings.NewReader(cleanBody))
+		originalContentLength := req.ContentLength
+
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+
+		assert.JSONEq(t, cleanBody, string(modifiedBodyBytes), "Body should not have been modified")
+		assert.Equal(t, originalContentLength, req.ContentLength, "ContentLength should not have changed")
+	})
+
+	t.Run("handles nil body", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/", nil)
+		req.Body = nil // Explicitly set body to nil
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+		assert.Nil(t, req.Body, "Body should remain nil")
+	})
+
+	t.Run("handles empty body", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/", strings.NewReader(""))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+		bodyBytes, _ := io.ReadAll(req.Body)
+		assert.Empty(t, bodyBytes, "Body should remain empty")
+	})
+
+	t.Run("handles non-json body", func(t *testing.T) {
+		nonJsonBody := "this is not json"
+		req := httptest.NewRequest("POST", "/", strings.NewReader(nonJsonBody))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+		bodyBytes, _ := io.ReadAll(req.Body)
+		assert.Equal(t, nonJsonBody, string(bodyBytes), "Non-JSON body should not be modified")
+	})
 }
