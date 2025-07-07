@@ -1,7 +1,17 @@
 # Stage 1: Build the Go application
 FROM golang:1.24-alpine AS builder
 
-RUN apk add --no-cache make
+# Accept GOGEMINI_PORT as a build argument
+ARG GOGEMINI_PORT
+# Set it as an environment variable for the builder stage
+ENV GOGEMINI_PORT=${GOGEMINI_PORT}
+
+# Install build dependencies: make, bash, curl, unzip, and libs for bun
+RUN apk add --no-cache make bash curl unzip libgcc libstdc++
+
+# Install bun using its official installer
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH /root/.bun/bin:$PATH
 
 WORKDIR /app
 

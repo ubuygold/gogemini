@@ -4,11 +4,24 @@ import react from "@vitejs/plugin-react";
 import fs from "fs";
 import yaml from "js-yaml";
 
-// Load and parse the YAML configuration file
-const config = yaml.load(fs.readFileSync("../config.yaml", "utf8")) as {
-  port: number;
+// Define a function to get the API port
+const getApiPort = () => {
+  // In development, try to read from env var first, then config file.
+  if (process.env.GOGEMINI_PORT) {
+    return parseInt(process.env.GOGEMINI_PORT, 10);
+  }
+
+  try {
+    const configFile = fs.readFileSync("../config.yaml", "utf8");
+    const config = yaml.load(configFile) as { port: number };
+    return config.port || 8081;
+  } catch (error) {
+    console.warn("Could not read config.yaml, using default port 8081.", error);
+    return 8081;
+  }
 };
-const apiPort = config.port || 8080;
+
+const apiPort = getApiPort();
 
 export default defineConfig({
   plugins: [tailwindcss(), react()],

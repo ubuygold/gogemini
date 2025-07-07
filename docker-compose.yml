@@ -5,12 +5,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - GOGEMINI_PORT=${GOGEMINI_PORT}
     ports:
       - "${GOGEMINI_PORT}:${GOGEMINI_PORT}"
     depends_on:
       - db
     environment:
-      - GOGEMINI_DATABASE_DSN=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:{POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+      - GOGEMINI_DATABASE_DSN=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable
       - GOGEMINI_DATABASE_TYPE=postgres
       - GOGEMINI_PORT=${GOGEMINI_PORT}
       - GOGEMINI_ADMIN_PASSWORD=${GOGEMINI_ADMIN_PASSWORD}

@@ -40,17 +40,21 @@ type Config struct {
 
 // LoadConfig reads and parses the configuration file. It returns the config and a potential warning message.
 var LoadConfig = func(path string) (*Config, string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to read config file: %w", err)
-	}
-
 	var config Config
 	var warning string
-	err = yaml.Unmarshal(data, &config)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to parse config file: %w", err)
+
+	data, err := os.ReadFile(path)
+	if err == nil {
+		// File exists, so unmarshal it
+		err = yaml.Unmarshal(data, &config)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to parse config file: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		// An error other than "not found" occurred
+		return nil, "", fmt.Errorf("failed to read config file: %w", err)
 	}
+	// If file does not exist, we continue with an empty config and rely on environment variables.
 
 	// Set default values
 	if config.Proxy.DisableKeyThreshold == 0 {

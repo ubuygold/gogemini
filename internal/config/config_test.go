@@ -44,10 +44,28 @@ func TestLoadConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("non-existent file", func(t *testing.T) {
+	t.Run("non-existent file without env vars", func(t *testing.T) {
 		_, _, err := LoadConfig("non-existent-file.yaml")
 		if err == nil {
-			t.Error("Expected an error, but got nil")
+			t.Error("Expected an error for missing database config, but got nil")
+		}
+	})
+
+	t.Run("non-existent file with env vars", func(t *testing.T) {
+		os.Setenv("GOGEMINI_DATABASE_TYPE", "postgres")
+		os.Setenv("GOGEMINI_DATABASE_DSN", "some-dsn")
+		defer os.Unsetenv("GOGEMINI_DATABASE_TYPE")
+		defer os.Unsetenv("GOGEMINI_DATABASE_DSN")
+
+		config, _, err := LoadConfig("non-existent-file.yaml")
+		if err != nil {
+			t.Fatalf("Expected no error, but got %v", err)
+		}
+		if config.Database.Type != "postgres" {
+			t.Errorf("Expected database type postgres, got %s", config.Database.Type)
+		}
+		if config.Database.DSN != "some-dsn" {
+			t.Errorf("Expected database dsn some-dsn, got %s", config.Database.DSN)
 		}
 	})
 
