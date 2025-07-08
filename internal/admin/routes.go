@@ -35,6 +35,7 @@ func SetupRoutes(router *gin.Engine, dbService db.Service, km keymanager.Manager
 			clientKeysGroup.GET("/:id", handler.GetClientKeyHandler)
 			clientKeysGroup.PUT("/:id", handler.UpdateClientKeyHandler)
 			clientKeysGroup.DELETE("/:id", handler.DeleteClientKeyHandler)
+			clientKeysGroup.POST("/:id/reset", handler.ResetClientKeyHandler)
 		}
 	}
 }

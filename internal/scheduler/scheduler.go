@@ -32,18 +32,12 @@ func NewScheduler(db db.Service, cfg *config.Config, keyManager Manager) *Schedu
 }
 
 func (s *Scheduler) Start() {
-	// Schedule daily reset of API key usage
-	_, err := s.c.AddFunc("@daily", s.resetAPIKeyUsage)
-	if err != nil {
-		log.Fatalf("Error scheduling daily api key reset job: %v", err)
-	}
-
 	// Schedule periodic check to revive disabled Gemini keys
 	revivalInterval := "@every 10m" // Default to every 10 minutes
 	if s.config.Scheduler.KeyRevivalInterval != "" {
 		revivalInterval = s.config.Scheduler.KeyRevivalInterval
 	}
-	_, err = s.c.AddFunc(revivalInterval, s.runKeyRevivalJob)
+	_, err := s.c.AddFunc(revivalInterval, s.runKeyRevivalJob)
 	if err != nil {
 		log.Fatalf("Error scheduling gemini key revival job: %v", err)
 	}
@@ -55,13 +49,6 @@ func (s *Scheduler) Start() {
 	}
 
 	s.c.Start()
-}
-
-func (s *Scheduler) resetAPIKeyUsage() {
-	log.Println("Running daily job: Resetting all API key usage counts.")
-	if err := s.db.ResetAllAPIKeyUsage(); err != nil {
-		log.Printf("Error resetting API key usage: %v", err)
-	}
 }
 
 func (s *Scheduler) runKeyRevivalJob() {

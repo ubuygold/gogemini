@@ -290,3 +290,30 @@ func (h *Handler) DeleteClientKeyHandler(c *gin.Context) {
 	}
 	c.JSON(http.StatusNoContent, nil)
 }
+
+func (h *Handler) ResetClientKeyHandler(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid key ID"})
+		return
+	}
+
+	key, err := h.db.GetAPIKey(uint(id))
+	if err != nil {
+		if errors.Is(err, db.ErrAPIKeyNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Client key not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve client key"})
+		}
+		return
+	}
+
+	key.UsageCount = 0
+
+	if err := h.db.UpdateAPIKey(key); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update client key"})
+		return
+	}
+
+	c.JSON(http.StatusOK, key)
+}

@@ -741,3 +741,54 @@ func TestHandlerDBErrors(t *testing.T) {
 		mockDB.AssertExpectations(t)
 	})
 }
+
+func TestResetClientKeyHandler(t *testing.T) {
+	cfg := &config.Config{Admin: config.AdminConfig{Password: "test-password"}}
+	mockDB := &mockDBService{}
+	router := setupTestRouter(mockDB, &MockKeyManager{}, cfg)
+
+	t.Run("ResetClientKeyHandler success", func(t *testing.T) {
+		originalKey := &model.APIKey{
+			Model:      gorm.Model{ID: 1},
+			Key:        "original-secret-key",
+			UsageCount: 100,
+			Status:     "active",
+		}
+
+		// When GetAPIKey is called with ID 1, return the original key
+		mockDB.On("GetAPIKey", uint(1)).Return(originalKey, nil).Once()
+
+		// We expect UpdateAPIKey to be called. We capture the argument to check it.
+		var updatedKey model.APIKey
+		mockDB.On("UpdateAPIKey", mock.AnythingOfType("*model.APIKey")).Run(func(args mock.Arguments) {
+			keyArg := args.Get(0).(*model.APIKey)
+			updatedKey = *keyArg // Dereference and copy
+		}).Return(nil).Once()
+
+		req, _ := http.NewRequest(http.MethodPost, "/admin/client-keys/1/reset", nil)
+		req.SetBasicAuth("admin", "test-password")
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+
+		// Assertions
+		assert.Equal(t, http.StatusOK, resp.Code)
+		mockDB.AssertExpectations(t)
+
+		// Verify the captured key
+		assert.Equal(t, uint(1), updatedKey.ID)
+		assert.Equal(t, 0, updatedKey.UsageCount, "UsageCount should be reset to 0")
+		assert.Equal(t, "original-secret-key", updatedKey.Key, "Key string should not change")
+	})
+
+	t.Run("ResetClientKeyHandler not found", func(t *testing.T) {
+		mockDB.On("GetAPIKey", uint(2)).Return(nil, db.ErrAPIKeyNotFound).Once()
+
+		req, _ := http.NewRequest(http.MethodPost, "/admin/client-keys/2/reset", nil)
+		req.SetBasicAuth("admin", "test-password")
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+
+		assert.Equal(t, http.StatusNotFound, resp.Code)
+		mockDB.AssertExpectations(t)
+	})
+}

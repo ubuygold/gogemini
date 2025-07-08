@@ -29,11 +29,6 @@ type MockDBService struct {
 	mock.Mock
 }
 
-func (m *MockDBService) ResetAllAPIKeyUsage() error {
-	args := m.Called()
-	return args.Error(0)
-}
-
 // Implement other methods of the db.Service interface, returning nil or zero values.
 func (m *MockDBService) LoadActiveGeminiKeys() ([]model.GeminiKey, error) { return nil, nil }
 func (m *MockDBService) ResetGeminiKeyFailureCount(key string) error      { return nil }
@@ -58,21 +53,6 @@ func (m *MockDBService) UpdateAPIKey(key *model.APIKey) error              { ret
 func (m *MockDBService) DeleteAPIKey(id uint) error                        { return nil }
 func (m *MockDBService) IncrementAPIKeyUsageCount(key string) error        { return nil }
 func (m *MockDBService) FindAPIKeyByKey(key string) (*model.APIKey, error) { return nil, nil }
-
-func TestScheduler_ResetUsageJob(t *testing.T) {
-	mockDB := new(MockDBService)
-	mockKM := new(MockKeyManager)
-	testConfig := &config.Config{}
-	// We need to cast mockDB to db.Service because NewScheduler expects the interface, not the mock struct.
-	var dbService db.Service = mockDB
-	scheduler := NewScheduler(dbService, testConfig, mockKM)
-
-	mockDB.On("ResetAllAPIKeyUsage").Return(nil).Once()
-
-	scheduler.resetAPIKeyUsage()
-
-	mockDB.AssertExpectations(t)
-}
 
 func TestScheduler_RunKeyRevivalJob(t *testing.T) {
 	mockDB := new(MockDBService)
@@ -102,7 +82,7 @@ func TestScheduler_StartStop(t *testing.T) {
 	scheduler.Start()
 	assert.NotNil(t, scheduler.c)
 	entries := scheduler.c.Entries()
-	assert.Len(t, entries, 3)
+	assert.Len(t, entries, 2)
 
 	scheduler.Stop()
 	// After stopping, the context of the cron scheduler should be done.

@@ -60,6 +60,25 @@ function ClientKeyManager({ password }: ClientKeyManagerProps) {
     }
   };
 
+  const resetKey = async (id: number) => {
+    if (!confirm(`Are you sure you want to reset the usage count for key ID ${id}?`)) {
+      return;
+    }
+    const response = await fetch(`/admin/client-keys/${id}/reset`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${btoa(`admin:${password}`)}`,
+      },
+    });
+    if (response.ok) {
+      alert('Key usage count reset successfully.');
+      fetchKeys();
+    } else {
+      const error = await response.json();
+      alert(`Failed to reset key: ${error.error}`);
+    }
+  };
+
   const generateRandomKey = () => {
     const randomString =
       'sk-' +
@@ -138,7 +157,13 @@ function ClientKeyManager({ password }: ClientKeyManagerProps) {
                     <td>{key.Permissions}</td>
                     <td>{key.RateLimit}</td>
                     <td>{new Date(key.ExpiresAt).toLocaleString()}</td>
-                    <td>
+                    <td className="flex gap-2">
+                      <button
+                        onClick={() => resetKey(key.ID)}
+                        className="btn btn-warning btn-sm"
+                      >
+                        Reset Usage
+                      </button>
                       <button
                         onClick={() => deleteKey(key.ID)}
                         className="btn btn-error btn-sm"

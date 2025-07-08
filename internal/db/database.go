@@ -40,7 +40,6 @@ type Service interface {
 	UpdateAPIKey(key *model.APIKey) error
 	DeleteAPIKey(id uint) error
 	IncrementAPIKeyUsageCount(key string) error
-	ResetAllAPIKeyUsage() error
 	FindAPIKeyByKey(key string) (*model.APIKey, error)
 }
 
@@ -298,15 +297,6 @@ func (s *gormService) IncrementAPIKeyUsageCount(key string) error {
 	result := s.db.Model(&model.APIKey{}).Where("key = ?", key).UpdateColumn("usage_count", gorm.Expr("usage_count + 1"))
 	if result.Error != nil {
 		return fmt.Errorf("failed to increment usage count for api key %s: %w", key, result.Error)
-	}
-	return nil
-}
-
-// ResetAllAPIKeyUsage resets the usage count of all API keys to 0.
-func (s *gormService) ResetAllAPIKeyUsage() error {
-	result := s.db.Model(&model.APIKey{}).Where("usage_count > 0").Update("usage_count", 0)
-	if result.Error != nil {
-		return fmt.Errorf("failed to reset all api key usage: %w", result.Error)
 	}
 	return nil
 }

@@ -221,20 +221,6 @@ func TestIncrementAPIKeyUsageCount(t *testing.T) {
 	assert.Equal(t, 1, fetchedKey.UsageCount)
 }
 
-func TestResetAllAPIKeyUsage(t *testing.T) {
-	db := setupTestDB(t)
-	db.CreateAPIKey(&model.APIKey{Key: "reset-api-1", UsageCount: 10})
-	db.CreateAPIKey(&model.APIKey{Key: "reset-api-2", UsageCount: 20})
-
-	err := db.ResetAllAPIKeyUsage()
-	assert.NoError(t, err)
-
-	keys, _ := db.ListAPIKeys()
-	for _, k := range keys {
-		assert.Equal(t, 0, k.UsageCount)
-	}
-}
-
 func TestUpdateGeminiKeyStatus(t *testing.T) {
 	db := setupTestDB(t)
 	key := &model.GeminiKey{Key: "status-key", Status: "active"}
