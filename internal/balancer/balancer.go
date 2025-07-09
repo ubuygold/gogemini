@@ -60,10 +60,11 @@ func NewBalancer(km Manager, logger *slog.Logger) (*Balancer, error) {
 		req.Host = targetURL.Host
 
 		// The original path from the client request is already in req.URL.Path
-		// We need to remove the "models/" prefix from the model name in the path.
-		// e.g. /v1beta/models/gemini-pro:generateContent -> /v1beta/gemini-pro:generateContent
-		if strings.Contains(req.URL.Path, "/models/") {
-			req.URL.Path = strings.Replace(req.URL.Path, "/models/", "/", 1)
+		// The original path from the client request is already in req.URL.Path.
+		// We need to ensure the "models/" prefix exists for the target API.
+		// e.g., /v1beta/gemini-pro:generateContent -> /v1beta/models/gemini-pro:generateContent
+		if !strings.Contains(req.URL.Path, "/models/") {
+			req.URL.Path = strings.Replace(req.URL.Path, "/v1beta/", "/v1beta/models/", 1)
 		}
 	}
 
