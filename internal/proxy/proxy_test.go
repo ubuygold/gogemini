@@ -437,4 +437,148 @@ func TestModifyRequestBody(t *testing.T) {
 		assert.JSONEq(t, expectedBody, string(modifiedBodyBytes))
 		assert.Equal(t, int64(len(modifiedBodyBytes)), req.ContentLength, "ContentLength was not updated correctly")
 	})
+
+	t.Run("removes reasoning_effort field", func(t *testing.T) {
+		originalBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9,
+			"reasoning_effort": "low"
+		}`
+		expectedBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9
+		}`
+
+		req := httptest.NewRequest("POST", "/", strings.NewReader(originalBody))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+
+		assert.JSONEq(t, expectedBody, string(modifiedBodyBytes))
+		assert.Equal(t, int64(len(modifiedBodyBytes)), req.ContentLength, "ContentLength was not updated correctly")
+	})
+
+	t.Run("removes max_completion_tokens field", func(t *testing.T) {
+		originalBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9,
+			"max_completion_tokens": -1
+		}`
+		expectedBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9
+		}`
+
+		req := httptest.NewRequest("POST", "/", strings.NewReader(originalBody))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+
+		assert.JSONEq(t, expectedBody, string(modifiedBodyBytes))
+		assert.Equal(t, int64(len(modifiedBodyBytes)), req.ContentLength, "ContentLength was not updated correctly")
+	})
+
+	t.Run("removes n field", func(t *testing.T) {
+		originalBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9,
+			"n": 3
+		}`
+		expectedBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9
+		}`
+
+		req := httptest.NewRequest("POST", "/", strings.NewReader(originalBody))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+
+		assert.JSONEq(t, expectedBody, string(modifiedBodyBytes))
+		assert.Equal(t, int64(len(modifiedBodyBytes)), req.ContentLength, "ContentLength was not updated correctly")
+	})
+
+	t.Run("removes tools field", func(t *testing.T) {
+		originalBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9,
+			"tools": [{"type": "function", "function": {"name": "get_weather"}}]
+		}`
+		expectedBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9
+		}`
+
+		req := httptest.NewRequest("POST", "/", strings.NewReader(originalBody))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+
+		assert.JSONEq(t, expectedBody, string(modifiedBodyBytes))
+		assert.Equal(t, int64(len(modifiedBodyBytes)), req.ContentLength, "ContentLength was not updated correctly")
+	})
+
+	t.Run("removes function_call field", func(t *testing.T) {
+		originalBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9,
+			"function_call": "auto"
+		}`
+		expectedBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9
+		}`
+
+		req := httptest.NewRequest("POST", "/", strings.NewReader(originalBody))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+
+		assert.JSONEq(t, expectedBody, string(modifiedBodyBytes))
+		assert.Equal(t, int64(len(modifiedBodyBytes)), req.ContentLength, "ContentLength was not updated correctly")
+	})
+
+	t.Run("removes functions field", func(t *testing.T) {
+		originalBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9,
+			"functions": [{"name": "get_weather"}]
+		}`
+		expectedBody := `{
+			"model": "gemini-pro",
+			"messages": [{"role": "user", "content": "Hello"}],
+			"temperature": 0.9
+		}`
+
+		req := httptest.NewRequest("POST", "/", strings.NewReader(originalBody))
+		err := proxy.ModifyRequestBody(req)
+		require.NoError(t, err)
+
+		modifiedBodyBytes, err := io.ReadAll(req.Body)
+		require.NoError(t, err)
+
+		assert.JSONEq(t, expectedBody, string(modifiedBodyBytes))
+		assert.Equal(t, int64(len(modifiedBodyBytes)), req.ContentLength, "ContentLength was not updated correctly")
+	})
 }

@@ -242,6 +242,12 @@ func (p *OpenAIProxy) ModifyRequestBody(req *http.Request) error {
 		"logit_bias",
 		"logprobs",
 		"top_logprobs",
+		"reasoning_effort",
+		"max_completion_tokens",
+		"n",
+		"tools",
+		"function_call",
+		"functions",
 	}
 
 	modified := false
@@ -280,6 +286,7 @@ func (p *OpenAIProxy) ModifyRequestBody(req *http.Request) error {
 		if err != nil {
 			return fmt.Errorf("failed to marshal modified request body: %w", err)
 		}
+		p.logger.Debug("Modified request body for proxying", "body", string(newBodyBytes))
 		req.Body = io.NopCloser(bytes.NewBuffer(newBodyBytes))
 		req.ContentLength = int64(len(newBodyBytes))
 	}
