@@ -123,6 +123,14 @@ func setupAndRunServer(cfg *config.Config, log *slog.Logger, dbService db.Servic
 	openaiGroup.GET("/*path", openaiHandlerFunc)
 	openaiGroup.POST("/*path", openaiHandlerFunc)
 
+	// Route POST /v1/embeddings to the same OpenAI proxy handler logic.
+	// This requires calling the openaiProxy directly to avoid the http.StripPrefix
+	// issue that would occur if we reused openaiHandlerFunc.
+	// The route is also protected by the same authentication middleware.
+	router.POST("/v1/embeddings", auth.AuthMiddleware(dbService), func(c *gin.Context) {
+		openaiProxy.ServeHTTP(c.Writer, c.Request)
+	})
+
 	// Serve frontend
 	distFS, err := fs.Sub(webUI, "dist")
 	if err != nil {
